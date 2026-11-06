@@ -46,6 +46,8 @@ def reference_file(*, user_id: int, host: str) -> Path:
 
 
 def store_host_reference(*, user_id: int, host: str, body: bytes) -> dict:
+    if type(user_id) is not int or user_id <= 0 or host not in HOST_NAMES:
+        raise StudioReferenceError("Usuário ou personagem inválido.")
     if not isinstance(body, bytes) or not 0 < len(body) <= MAX_IMAGE_BYTES:
         raise StudioReferenceError("Imagem inválida ou acima de 8 MB.")
     try:
@@ -61,45 +63,27 @@ def store_host_reference(*, user_id: int, host: str, body: bytes) -> dict:
             data = out.getvalue()
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         raise StudioReferenceError("Arquivo não é uma imagem válida.") from None
-    path = reference_file(user_id=user_id, host=host)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".uploading")
     try:
-        with tmp.open("wb") as dest:
-            os.chmod(tmp, 0o600)
-            dest.write(data)
-            dest.flush()
-            os.fsync(dest.fileno())
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-    return {"host": host, "stored": True, "private": True, "bytes": len(data)}
+        store_asset_bytes(
+            user_id=user_id, kind="image", filename=f"{host.lower()}.png", body=data,
+        )
+    except EntreNosDoisDriveError as exc:
+        raise StudioReferenceError(str(exc)) from None
+    return {"host": host, "stored": True, "private": True, "bytes": len(data), "storage": "google_drive"}
 
 
 def host_reference_status(*, user_id: int) -> dict:
-    return {
-        host: reference_file(user_id=user_id, host=host).is_file()
-        for host in sorted(HOST_NAMES)
-    }
-
-
-def private_storage_health() -> dict:
-    """Verify actual write access without exposing paths or creating paid work.
-
-    This does not prove that the directory is mounted persistently. That still
-    requires an operator to check the Coolify volume configuration.
-    """
-    raw = os.getenv("CODEXIA_STUDIO_PRIVATE_DIR", "").strip()
-    if not raw:
-        return {"ready": False, "reason": "missing_configuration"}
+    if type(user_id) is not int or user_id <= 0:
+        raise StudioReferenceError("Usuário inválido.")
     try:
-        root = _storage_root()
-        with tempfile.NamedTemporaryFile(prefix=".studio-writecheck-", dir=root, delete=True) as file:
-            file.write(b"ok")
-            file.flush()
-            os.fsync(file.fileno())
-    except StudioReferenceError as exc:
-        return {"ready": False, "reason": "public_directory" if "diretório público" in str(exc) else "not_writable"}
-    except (OSError, ValueError):
-        return {"ready": False, "reason": "not_writable"}
-    return {"ready": True, "reason": "write_access_verified"}
+        return {
+            host: find_asset(user_id=user_id, kind="image", filename=f"{host.lower()}.png") is not None
+            for host in sorted(HOST_NAMES)
+        }
+    except EntreNosDoisDriveError as exc:
+        raise StudioReferenceError(str(exc)) from None
+
+
+def private_storage_health(user_id: int | None = None) -> dict:
+    """Report whether the existing Codexia Google Drive settings are usable."""
+    return drive_storage_health(user_id=user_id)
