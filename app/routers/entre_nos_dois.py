@@ -82,9 +82,18 @@ def readiness(
     own_settings = settings if settings is not None else SimpleNamespace()
     elevenlabs = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
     fal_configured = bool(normalize_secret(os.getenv("FAL_KEY")))
+    storage_configured = bool(os.getenv("CODEXIA_STUDIO_PRIVATE_DIR", "").strip())
+    visual_assets = {}
+    if storage_configured:
+        try:
+            visual_assets = host_reference_status(user_id=current_user.id)
+        except (StudioReferenceError, OSError):
+            storage_configured = False
     return summarize_readiness(
         elevenlabs_configured=bool(elevenlabs["configured"]),
         fal_configured=fal_configured,
+        private_storage_configured=storage_configured,
+        visual_assets=visual_assets,
     )
 
 @router.post("/verify-voices")
