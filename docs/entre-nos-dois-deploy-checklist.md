@@ -56,3 +56,42 @@ O resultado é JSON com `all_passed` e cada verificação; um erro retorna códi
 de saída diferente de zero. **Não verifica persistência após restart**, que
 deve ser testada manualmente no Coolify; tampouco faz upload, TTS, animação
 ou publicação. Nunca reutilize um token de administrador em logs públicos.
+
+## Primeira homologação isolada: Docker Compose
+
+O arquivo `docker-compose.entre-nos-dois-staging.yml` foi adicionado
+como **opção de homologação independente**, com PostgreSQL e armazenamento
+de imagens exclusivos e Redis próprio. Não usa volumes do Codexia de produção.
+A porta da API fica acessível somente por `127.0.0.1:18080` no host.
+
+Em um ambiente que tenha Docker Compose e o checkout da branch do PR:
+
+```bash
+# Configure estes valores como segredos fortes no ambiente privado, nunca no Git:
+export CODEXIA_STAGING_DB_PASSWORD='PREENCHER_LOCALMENTE'
+export CODEXIA_STAGING_SECRET_KEY='PREENCHER_LOCALMENTE'
+docker compose -f docker-compose.entre-nos-dois-staging.yml config --quiet
+docker compose -f docker-compose.entre-nos-dois-staging.yml up --build -d
+python scripts/entre_nos_dois_smoke.py --base-url http://127.0.0.1:18080
+```
+
+**Não execute literalmente os placeholders acima:** use valores aleatórios
+fortes diferentes dos de produção; não copie credenciais de produção. A construção
+da imagem pode consumir recursos do servidor. Validar RAM, CPU e espaço livre
+antes de iniciar. Não habilitar um domínio público sem TLS e autenticação.
+
+Criar um **administrador próprio de homologação** pelo processo autorizado
+de cadastro do Codexia, sem copiar usuários, tokens ou dados de produção.
+Apenas então executar os testes autenticados com
+`CODEXIA_STUDIO_SMOKE_TOKEN` local, como explicado acima.
+
+Para desligar sem apagar a biblioteca de imagens, use:
+
+```bash
+docker compose -f docker-compose.entre-nos-dois-staging.yml down
+```
+
+**Não use `down -v`**, pois isso apaga os volumes isolados de banco e
+imagens desta homologação. Não use este Compose no mesmo projeto Compose
+da instalação de produção nem altere os nomes dos volumes para os de produção.
+Esta configuração é preparatória: **não foi iniciada remotamente por esta PR**.
