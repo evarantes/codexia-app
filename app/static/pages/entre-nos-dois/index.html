@@ -36,6 +36,8 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <section class="card" style="margin-top:18px"><h2>Revisão de áudio — quatro falas</h2>
 <p class="muted">Importe MP3s previamente gerados com as vozes escolhidas para ouvir e conferir o diálogo. O Studio não sintetiza voz nem gera custos nesta etapa. Cada arquivo é privado, limitado a 10 MB e 45 segundos; a duração será medida automaticamente.</p>
 <div id="audio-review"><p class="muted">Faça login para verificar as quatro faixas.</p></div>
+<p><button id="play-audio-sequence" type="button" disabled>Ouvir diálogo completo</button> <button id="stop-audio-sequence" type="button" disabled>Parar reprodução</button></p>
+<p id="audio-timeline-summary" class="muted">A linha do tempo será calculada após importar os quatro MP3s.</p>
 <p id="audio-review-message" role="status" class="muted"></p></section>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div><p id="next-action" class="notice" role="status" aria-live="polite">Verificando próximo passo...</p></section>
 <section class="card" style="margin-top:18px"><h2>Prévia do episódio — sem custo</h2><p class="muted">Simulação visual do roteiro com imagens privadas cadastradas: não reproduz as vozes Andrey/Luciana nem vídeo com sincronização labial. Clique para conferir os turnos antes da produção.</p>
@@ -129,7 +131,35 @@ document.getElementById('studio-logout').addEventListener('click',()=>{
 const studioFetch=(url,options={})=>fetch(url,{...options,cache:'no-store',headers:{...authHeaders(),...(options.headers||{})}});
 const previews={};
 const audioPreviewUrls={};
-function releaseAudioPreviews(){for(const k of Object.keys(audioPreviewUrls)){URL.revokeObjectURL(audioPreviewUrls[k]);delete audioPreviewUrls[k]}}
+let sequencePlayer=null,sequenceIndices=[],sequenceCursor=0;
+function stopAudioSequence(){
+ sequenceIndices=[];sequenceCursor=0;
+ if(sequencePlayer){sequencePlayer.pause();sequencePlayer.removeAttribute('src');sequencePlayer=null}
+ document.getElementById('stop-audio-sequence').disabled=true;
+ document.getElementById('play-audio-sequence').disabled=Object.keys(audioPreviewUrls).length!==4;
+}
+function playNextAudioTurn(){
+ if(!sequenceIndices.length||sequenceCursor>=sequenceIndices.length){stopAudioSequence();return}
+ const index=sequenceIndices[sequenceCursor++];
+ const url=audioPreviewUrls[index];
+ if(!url){stopAudioSequence();return}
+ previewIndex=index-1;renderPreview();
+ sequencePlayer=new Audio(url);
+ sequencePlayer.addEventListener('ended',()=>{sequencePlayer=null;playNextAudioTurn()},{once:true});
+ sequencePlayer.addEventListener('error',()=>{stopAudioSequence();document.getElementById('audio-review-message').textContent='Falha ao reproduzir uma das falas.'},{once:true});
+ const p=sequencePlayer.play();
+ if(p&&typeof p.catch==='function')p.catch(()=>{stopAudioSequence();document.getElementById('audio-review-message').textContent='Reprodução bloqueada pelo navegador; toque em Ouvir novamente.'});
+}
+document.getElementById('play-audio-sequence').addEventListener('click',()=>{
+ stopAudioSequence();
+ if(Object.keys(audioPreviewUrls).length!==4){document.getElementById('audio-review-message').textContent='Cadastre primeiro os quatro áudios.';return}
+ sequenceIndices=[1,2,3,4];sequenceCursor=0;
+ document.getElementById('stop-audio-sequence').disabled=false;
+ document.getElementById('play-audio-sequence').disabled=true;
+ playNextAudioTurn();
+});
+document.getElementById('stop-audio-sequence').addEventListener('click',stopAudioSequence);
+function releaseAudioPreviews(){stopAudioSequence();for(const k of Object.keys(audioPreviewUrls)){URL.revokeObjectURL(audioPreviewUrls[k]);delete audioPreviewUrls[k]}document.getElementById('play-audio-sequence').disabled=true}
 async function refreshAudioReview(){
  const holder=document.getElementById('audio-review');
  const result=await studioFetch('/studio/entre-nos-dois/audio');
@@ -160,6 +190,14 @@ async function refreshAudioReview(){
    if(downloaded.ok){audioPreviewUrls[segment.index]=URL.createObjectURL(await downloaded.blob());player.src=audioPreviewUrls[segment.index];row.append(player)}
   }
   holder.append(row);
+ }
+ const timelineResponse=await studioFetch('/studio/entre-nos-dois/audio/timeline');
+ if(timelineResponse.ok){
+   const timeline=await timelineResponse.json();
+   document.getElementById('audio-timeline-summary').textContent=timeline.ready
+     ?'Duração medida: '+timeline.total_seconds+'s (meta editorial: '+timeline.planned_seconds+'s). Prévia sequencial com imagens estáticas, ainda sem lip-sync.'
+     :'Faltam áudios das falas: '+(timeline.missing_indices||[]).join(', ')+'.';
+   document.getElementById('play-audio-sequence').disabled=!timeline.ready||Object.keys(audioPreviewUrls).length!==4;
  }
 }
 
