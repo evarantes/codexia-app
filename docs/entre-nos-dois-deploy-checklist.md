@@ -59,6 +59,12 @@ ou publicação. Nunca reutilize um token de administrador em logs públicos.
 
 ## Primeira homologação isolada: Docker Compose
 
+A homologação usa `app.studio_staging:app`, um aplicativo FastAPI limitado
+às rotas do Studio, login administrativo e saúde. **Não** inicia o painel
+principal, monitor de produção, recuperações de filas, workers ou publicação.
+O comando aplica migrações somente no PostgreSQL isolado antes de iniciar
+o serviço; se falharem, a API não inicia.
+
 O arquivo `docker-compose.entre-nos-dois-staging.yml` foi adicionado
 como **opção de homologação independente**, com PostgreSQL e armazenamento
 de imagens exclusivos e Redis próprio. Não usa volumes do Codexia de produção.
