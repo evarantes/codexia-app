@@ -13,6 +13,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
+from fastapi.responses import Response
 
 from app.routers import entre_nos_dois
 from app.routers.auth import get_current_admin_user
@@ -32,6 +33,28 @@ class EntreNosDoisHTTPIntegrationTests(unittest.TestCase):
         pic = io.BytesIO()
         Image.new("RGB", (48, 48), (120, 80, 60)).save(pic, format="JPEG")
         self.valid_image = pic.getvalue()
+        self.drive_assets = {}
+        def store_asset(*, user_id, kind, filename, body, metadata=None):
+            self.drive_assets[(user_id, kind, filename)] = {
+                "kind": kind, "filename": filename, "body": body, "sha256": "test", "size": len(body),
+                **(metadata or {}),
+            }
+        def find_asset(*, user_id, kind, filename):
+            entry = self.drive_assets.get((user_id, kind, filename))
+            return ({key: value for key, value in entry.items() if key != "body"} | {"test_body": entry["body"]}) if entry else None
+        self.store_mock = patch("app.services.entre_nos_dois_references.store_asset_bytes", side_effect=store_asset)
+        self.find_refs_mock = patch("app.services.entre_nos_dois_references.find_asset", side_effect=find_asset)
+        self.find_router_mock = patch("app.routers.entre_nos_dois.find_asset", side_effect=find_asset)
+        self.stream_mock = patch(
+            "app.routers.entre_nos_dois.stream_asset",
+            side_effect=lambda entry, **kwargs: Response(
+                content=entry["test_body"], media_type=kwargs["media_type"],
+                headers={"Cache-Control": "private, no-store"},
+            ),
+        )
+        for mocked in (self.store_mock, self.find_refs_mock, self.find_router_mock, self.stream_mock):
+            mocked.start()
+            self.addCleanup(mocked.stop)
 
     def login_as(self, user_id):
         self.app.dependency_overrides[get_current_admin_user] = lambda: SimpleNamespace(id=user_id)
