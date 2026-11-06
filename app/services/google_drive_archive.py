@@ -127,6 +127,7 @@ class GoogleDriveArchive:
         self.account_id = int(account_id) if account_id not in (None, "") else None
         self.access_token = str(access_token or "").strip()
         self.access_folder_id = str(folder_id or "").strip()
+        self._task_folder_cache: Dict[tuple, str] = {}
 
     @staticmethod
     def _ensure_legacy_account(db):
@@ -476,15 +477,25 @@ class GoogleDriveArchive:
         }, fields="id").execute()
         return str(created["id"])
 
+    def _task_folder_id(self, service, values: Dict[str, Any], task: str) -> str:
+        task = _valid_task(task)
+        cache_key = (values.get("account_id"), values.get("folder_id"), task)
+        with _LOCK:
+            cached = self._task_folder_cache.get(cache_key)
+            if cached:
+                return cached
+            root_id = self._get_root_folder(service, values)
+            folder_id = self._task_folder(service, root_id, task)
+            self._task_folder_cache[cache_key] = folder_id
+            return folder_id
+
     def prepare_task_folder(self, task: str) -> str:
-        """Create/find root and task folders before a project starts parallel uploads."""
+        """Create/find and cache project folders before parallel uploads."""
         task = _valid_task(task)
         values = self._settings()
         try:
             with _LOCK:
-                service = self.drive_service()
-                root_id = self._get_root_folder(service, values)
-                return self._task_folder(service, root_id, task)
+                return self._task_folder_id(self.drive_service(), values, task)
         except GoogleDriveArchiveError:
             raise
         except Exception as exc:
@@ -507,8 +518,7 @@ class GoogleDriveArchive:
                         expected_previous_sha256: str = ""):
         values = self._settings()
         service = self.drive_service()
-        root_id = self._get_root_folder(service, values)
-        parent_id = self._task_folder(service, root_id, task)
+        parent_id = self._task_folder_id(service, values, task)
         existing = self._find_file(service, parent_id, kind, filename)
         existing_sha = str(((existing or {}).get("appProperties") or {}).get("sha256") or "")
         existing_size = int((existing or {}).get("size") or 0)
