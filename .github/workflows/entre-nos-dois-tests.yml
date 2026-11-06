@@ -77,7 +77,8 @@ jobs:
             tests.test_entre_nos_dois_staging_schema \
             tests.test_entre_nos_dois_staging_http_e2e \
             tests.test_entre_nos_dois_audio_review \
-            tests.test_entre_nos_dois_cost_worksheet
+            tests.test_entre_nos_dois_cost_worksheet \
+            tests.test_entre_nos_dois_tts_single
 
   staging-runtime:
     name: Start isolated Studio HTTP smoke (no billable calls)
