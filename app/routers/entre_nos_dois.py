@@ -20,6 +20,7 @@ from app.services.provider_config import resolve_secret, normalize_secret
 from app.services.entre_nos_dois_readiness import summarize_readiness
 from app.services.entre_nos_dois_cost_worksheet import worksheet, CostWorksheetError
 from app.services.entre_nos_dois_tts_single import submit_one_turn, PaidPilotTtsError
+from app.services.entre_nos_dois_scene_readiness import lip_sync_readiness, LipSyncReadinessError
 from app.services.entre_nos_dois_references import (
     StudioReferenceError, host_reference_status, reference_file, store_host_reference, private_storage_health,
 )
@@ -249,6 +250,22 @@ def generate_single_pilot_turn(
         )
     except (PaidPilotTtsError, CostWorksheetError, StudioAudioError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.get("/scene/readiness")
+def scene_readiness(
+    usd_per_second: str | None = None,
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Private-media presence and scene costs only. Zero provider calls."""
+    try:
+        return lip_sync_readiness(
+            user_id=current_user.id, usd_per_second=usd_per_second,
+        )
+    except LipSyncReadinessError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except (StudioReferenceError, StudioAudioError, OSError):
+        raise HTTPException(status_code=503, detail="Armazenamento privado indisponível.") from None
 
 
 @router.get("/audio/timeline")
