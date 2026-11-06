@@ -34,8 +34,17 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <button type="submit">Trocar senha e abrir Studio</button></form><p id="studio-login-status" class="muted" role="status" aria-live="polite">Autenticação necessária para dados e imagens privados.</p></section>
 <div class="studio-tabs" role="tablist" aria-label="Seções de Entre Nós Dois">
 <button class="studio-tab" type="button" role="tab" aria-selected="true" aria-controls="tab-preparation" data-target="tab-preparation">Preparação</button>
-<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-videos" data-target="tab-videos">Vídeos do projeto</button>
+<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-videos" data-target="tab-videos">Vídeos do projeto</button>\n<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-channels" data-target="tab-channels">Canal YouTube</button>
 </div>
+<div id="tab-channels" role="tabpanel" hidden>
+<section class="card"><h2>Canal do Entre Nós Dois</h2>
+<p class="muted">Conecte um canal adicional usando a autorização do Google. Isso não substitui a conexão geral do YouTube nas Configurações. A publicação continuará manual e dependerá da aprovação do episódio.</p>
+<p><button id="connect-project-channel" type="button">Conectar canal adicional</button> <button id="refresh-project-channels" type="button">Atualizar canais</button></p>
+<label for="project-channel-select">Canal vinculado ao projeto</label>
+<select id="project-channel-select" style="display:block;padding:10px;border-radius:8px;max-width:420px;width:100%"></select>
+<p><button id="save-project-channel" type="button">Vincular canal selecionado</button></p>
+<p id="project-channel-message" class="muted" role="status" aria-live="polite">Nenhum canal carregado.</p>
+</section></div>
 <div id="tab-preparation" role="tabpanel">
 <div class="grid">
 <section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais ficam na pasta privada do Entre Nós Dois no Google Drive antes de qualquer animação.</p></section>
@@ -437,13 +446,38 @@ async function refreshProjectVideos(){
   }
  }catch(error){holder.textContent=error.message}
 }
+async function refreshProjectChannels(){
+ const select=document.querySelector('#project-channel-select'),message=document.querySelector('#project-channel-message');
+ message.textContent='Carregando canais autorizados...';
+ try{
+  const response=await studioFetch('/studio/entre-nos-dois/channels');
+  if(!response.ok)throw new Error('Não foi possível carregar canais autorizados.');
+  const data=await response.json();select.replaceChildren();
+  if(!(data.channels||[]).length){const option=document.createElement('option');option.value='';option.textContent='Nenhum canal adicional conectado';select.append(option)}
+  for(const channel of data.channels||[]){const option=document.createElement('option');option.value=String(channel.id);option.textContent=channel.channel_title+(channel.selected?' · vinculado':'');select.append(option)}
+  if(data.selected_account_id)select.value=String(data.selected_account_id);
+  message.textContent=data.selected_account_id?'Canal do projeto carregado.':'Conecte e selecione um canal adicional.';
+ }catch(error){message.textContent=error.message}
+}
+document.querySelector('#connect-project-channel').addEventListener('click',()=>{window.location.href='/studio/entre-nos-dois/channels/connect'});
+document.querySelector('#refresh-project-channels').addEventListener('click',refreshProjectChannels);
+document.querySelector('#save-project-channel').addEventListener('click',async()=>{
+ const id=Number(document.querySelector('#project-channel-select').value),message=document.querySelector('#project-channel-message');
+ if(!id){message.textContent='Conecte primeiro um canal adicional.';return}
+ try{const response=await studioFetch('/studio/entre-nos-dois/channels/link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:id})});
+  const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.detail||'Não foi possível vincular o canal.');
+  message.textContent='Canal '+data.channel_title+' vinculado ao Entre Nós Dois.';await refreshProjectChannels();
+ }catch(error){message.textContent=error.message}
+});
+const oauthResult=new URLSearchParams(location.search).get('youtube_oauth');
+if(oauthResult){const messages={success:'Canal autorizado e vinculado ao Entre Nós Dois.',cancelled:'Conexão cancelada pelo Google.',expired:'A autorização expirou. Tente novamente.',configuration:'Confira as credenciais OAuth do YouTube em Configurações.',failed:'Não foi possível concluir a autorização do canal.'};document.querySelector('#project-channel-message').textContent=messages[oauthResult]||'Resultado da conexão do YouTube.'}
 document.querySelector('#refresh-project-videos').addEventListener('click',refreshProjectVideos);
 document.querySelectorAll('.studio-tab').forEach(button=>button.addEventListener('click',async()=>{
  const target=button.dataset.target;
  document.querySelectorAll('.studio-tab').forEach(tab=>tab.setAttribute('aria-selected',String(tab===button)));
  document.querySelector('#tab-preparation').hidden=target!=='tab-preparation';
- document.querySelector('#tab-videos').hidden=target!=='tab-videos';
- if(target==='tab-videos')await refreshProjectVideos();
+ document.querySelector('#tab-videos').hidden=target!=='tab-videos';\n document.querySelector('#tab-channels').hidden=target!=='tab-channels';
+ if(target==='tab-videos')await refreshProjectVideos();\n if(target==='tab-channels')await refreshProjectChannels();
 }));
 document.querySelector('#verify-voices').addEventListener('click',async()=>{
  const button=document.querySelector('#verify-voices');
