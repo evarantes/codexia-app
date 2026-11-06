@@ -28,6 +28,16 @@ class StudioOverviewTests(unittest.TestCase):
         self.assertIn('href="/studio/entre-nos-dois/painel"', dashboard)
         self.assertIn('Entre Nós Dois', dashboard)
 
+    def test_studio_admin_login_verifies_permissions_and_session_logout(self):
+        studio = Path("app/static/pages/entre-nos-dois/index.html").read_text(encoding="utf-8")
+        self.assertIn('id="studio-login-form"', studio)
+        self.assertIn("fetch('/token'", studio)
+        self.assertIn("admin.ok", studio)
+        self.assertIn("sessionStorage.setItem(studioTokenKey", studio)
+        self.assertIn("sessionStorage.setItem('entre_nos_dois_logged_out','1')", studio)
+        self.assertIn("sessionStorage.getItem('entre_nos_dois_logged_out')", studio)
+        self.assertNotIn("localStorage.setItem(studioTokenKey", studio)
+
     def test_interactive_preview_has_no_paid_generation_calls(self):
         studio = Path("app/static/pages/entre-nos-dois/index.html").read_text(encoding="utf-8")
         self.assertIn('id="preview-next"', studio)
