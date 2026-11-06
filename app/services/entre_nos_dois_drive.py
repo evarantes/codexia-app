@@ -24,7 +24,7 @@ def task_for_user(user_id: int) -> str:
     return f"entre-nos-dois-user-{user_id}"
 
 
-def store_asset_bytes(*, user_id: int, kind: str, filename: str, body: bytes) -> dict:
+def store_asset_bytes(*, user_id: int, kind: str, filename: str, body: bytes, metadata: dict | None = None) -> dict:
     """Upload and checksum-verify an asset before registering its Drive pointer."""
     if not isinstance(body, bytes) or not body:
         raise EntreNosDoisDriveError("Arquivo vazio ou inválido.")
@@ -39,6 +39,8 @@ def store_asset_bytes(*, user_id: int, kind: str, filename: str, body: bytes) ->
             entry = archive.upload_path(task, kind, filename, path)
             if entry.get("sha256") != hashlib.sha256(body).hexdigest() or int(entry.get("size") or -1) != len(body):
                 raise EntreNosDoisDriveError("O Google Drive não confirmou a integridade do arquivo.")
+            if metadata:
+                entry.update(metadata)
             register(task, entry)
             return dict(entry)
     except EntreNosDoisDriveError:
