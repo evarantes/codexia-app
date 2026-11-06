@@ -70,11 +70,6 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert overview["auto_publish"] is False
     assert len(overview["dialogue"]) == 4
 
-    code, body = call(base, "/studio/entre-nos-dois/references/Helena", method="PUT",
-                      token=token, data=pixel_png(), content_type="application/octet-stream")
-    assert code == 200 and json.loads(body)["private"] is True
-    code, body = call(base, "/studio/entre-nos-dois/references/Helena/image", token=token)
-    assert code == 200 and body.startswith(b"\x89PNG")
     code, body = call(base, "/studio/entre-nos-dois/readiness", token=token)
     assert code == 200
     steps = {x["key"]: x["status"] for x in json.loads(body)["steps"]}
@@ -95,6 +90,11 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
         assert call(base, "/token", method="POST", data=new_login,
                     content_type="application/x-www-form-urlencoded")[0] == 200
         return {"staging_e2e": "passed", "media_storage": "blocked_without_drive", "billable_calls": 0, "published": False}
+    code, body = call(base, "/studio/entre-nos-dois/references/Helena", method="PUT",
+                      token=token, data=pixel_png(), content_type="application/octet-stream")
+    assert code == 200 and json.loads(body)["private"] is True
+    code, body = call(base, "/studio/entre-nos-dois/references/Helena/image", token=token)
+    assert code == 200 and body.startswith(b"\x89PNG")
     assert steps["helena_image"] == "configured"
 
     code, body = call(base, "/studio/entre-nos-dois/voice-cost-worksheet", token=token)
