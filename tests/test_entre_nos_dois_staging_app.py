@@ -32,6 +32,10 @@ class StudioOnlyStagingTests(unittest.TestCase):
     def test_login_is_only_for_active_admin_and_expires(self):
         self.assertIn("not user.is_active or not user.is_admin", self.source)
         self.assertIn("expires_delta=timedelta(hours=1)", self.source)
+        self.assertIn("app.dependency_overrides[get_current_admin_user] = staging_admin", self.source)
+        self.assertIn("if user.must_change_password:", self.source)
+        self.assertIn("admin: User = Depends(get_current_user)", self.source)
+        self.assertIn("admin.must_change_password = False", self.source)
         self.assertIn('@app.post("/token")', self.source)
 
     def test_public_surface_is_narrow(self):
@@ -42,7 +46,7 @@ class StudioOnlyStagingTests(unittest.TestCase):
             if isinstance(a, ast.Call) and isinstance(a.func, ast.Attribute)
             and a.func.attr in ("post", "get") and a.args and isinstance(a.args[0], ast.Constant)
         ]
-        self.assertEqual(sorted(route_paths), ["/", "/health", "/token"])
+        self.assertEqual(sorted(route_paths), ["/", "/health", "/staging/change-password", "/token"])
 
 
 if __name__ == "__main__":
