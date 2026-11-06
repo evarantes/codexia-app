@@ -1463,6 +1463,9 @@ def _run_migration(
             account_id = archive._settings().get("account_id")
             if account_id is not None:
                 pin_task_drive_account(task_id, account_id)
+            # Create the project's Drive folder before parallel uploads so
+            # worker threads cannot race to create duplicate folders.
+            archive.prepare_task_folder(task_id)
             assets = _migration_assets_for_project(project)
             project_ok = bool(assets)
             staged_metadata = []
@@ -1494,7 +1497,7 @@ def _run_migration(
                     "stage_phase": "uploading",
                 })
                 _write_job(job_id, payload)
-                max_parallel_uploads = min(3, len(asset_items))
+                max_parallel_uploads = max(1, min(3, len(asset_items)))
                 upload_lock = threading.Lock()
                 progress_state = {}
                 last_progress_write = 0.0
