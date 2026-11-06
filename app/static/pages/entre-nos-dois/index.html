@@ -23,11 +23,13 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais devem ser carregadas em armazenamento privado antes de qualquer animação.</p></section>
 <section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button></section>
 </div>
+<section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div></section>
 <section class="card" style="margin-top:18px"><h2>Diálogo do teste</h2><ol id="dialogue"><li class="muted">Carregando roteiro...</li></ol><p class="muted" id="disclosure"></p></section>
 <footer>O piloto usa vozes e personagens virtuais. A duração só poderá ser confirmada após a geração e medição dos áudios.</footer>
 </main>
 <script>
 const base='/studio/entre-nos-dois/overview';
+const readinessEndpoint='/studio/entre-nos-dois/readiness';
 const escapeText=x=>String(x??'');
 async function refresh(){
  const hosts=document.querySelector('#hosts'),pilot=document.querySelector('#pilot'),dialogue=document.querySelector('#dialogue');
@@ -52,7 +54,20 @@ async function refresh(){
      dialogue.append(li);
    }
    document.querySelector('#disclosure').textContent=escapeText(data.disclosure);
- }catch(err){hosts.textContent=err.message;pilot.textContent='Não disponível';dialogue.replaceChildren();}
+   const readiness=document.querySelector('#readiness');
+   readiness.replaceChildren();
+   const statusResp=await fetch(readinessEndpoint,{credentials:'same-origin',cache:'no-store'});
+   if(!statusResp.ok){throw new Error('Não foi possível consultar as integrações.');}
+   const snapshot=await statusResp.json();
+   for(const step of snapshot.steps||[]){
+     const p=document.createElement('p');
+     const indicator=document.createElement('strong');
+     indicator.className=step.status==='configured'?'ready':'status';
+     indicator.textContent=step.status==='configured'?'● Configurado: ':'○ Pendente: ';
+     p.append(indicator,document.createTextNode(escapeText(step.label)+' — '+escapeText(step.detail)));
+     readiness.append(p);
+   }
+ }catch(err){hosts.textContent=err.message;pilot.textContent='Não disponível';dialogue.replaceChildren();document.querySelector('#readiness').textContent=err.message;}
 }
 document.querySelector('#refresh').addEventListener('click',refresh);refresh();
 </script>
