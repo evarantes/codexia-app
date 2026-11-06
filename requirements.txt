@@ -72,3 +72,4 @@ requests
 rq
 sqlalchemy
 uvicorn
+mutagen>=1.47,<2.0
