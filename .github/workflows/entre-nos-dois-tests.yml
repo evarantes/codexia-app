@@ -10,6 +10,7 @@ on:
       - "app/static/pages/entre-nos-dois/**"
       - "app/main.py"
       - "scripts/entre_nos_dois_smoke.py"
+      - "docker-compose.entre-nos-dois-staging.yml"
       - ".github/workflows/entre-nos-dois-tests.yml"
   workflow_dispatch:
 
@@ -49,4 +50,5 @@ jobs:
             tests.test_entre_nos_dois_studio_api \
             tests.test_entre_nos_dois_readiness \
             tests.test_entre_nos_dois_references \
-            tests.test_entre_nos_dois_http_smoke
+            tests.test_entre_nos_dois_http_smoke \
+            tests.test_entre_nos_dois_staging
