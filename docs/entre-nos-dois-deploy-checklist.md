@@ -100,6 +100,14 @@ e recusa a criação quando já existe qualquer usuário. **Nunca** utilize
 a mesma senha do Codexia de produção. O usuário de homologação precisa
 alterar sua senha no primeiro acesso.
 
+No primeiro login pelo formulário do Studio, a API retorna a exigência de
+troca de senha e a interface exibe o formulário de alteração. **As rotas
+privadas do Studio recusam acesso enquanto a senha temporária não for
+substituída.** A troca é feita na mesma origem pelo endpoint
+`POST /staging/change-password`, com sessão autenticada de homologação,
+sem enviar credenciais a serviços externos. Após a alteração, a interface
+libera a prévia e o cadastro de personagens. A sessão expira após uma hora.
+
 Depois, abrir `http://127.0.0.1:18080/studio/entre-nos-dois/painel`
 **no navegador do próprio host** (ou através de túnel SSH local autorizado).
 O Studio agora oferece formulário de login administrativo. O login envia
