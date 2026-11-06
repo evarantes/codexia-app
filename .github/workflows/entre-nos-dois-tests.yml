@@ -7,6 +7,7 @@ on:
       - "app/services/entre_nos_dois*.py"
       - "tests/test_entre_nos_dois*.py"
       - "app/routers/entre_nos_dois.py"
+      - "app/routers/__init__.py"
       - "app/static/pages/entre-nos-dois/**"
       - "app/main.py"
       - "app/studio_staging.py"
