@@ -36,7 +36,14 @@ def store_asset_bytes(*, user_id: int, kind: str, filename: str, body: bytes, me
             archive = GoogleDriveArchive.for_task(task, user_id=user_id)
             if not archive.is_configured():
                 raise EntreNosDoisDriveError("Conecte o Google Drive em Configurações antes de enviar arquivos.")
-            entry = archive.upload_path(task, kind, filename, path)
+            previous = next(
+                (item.get("sha256", "") for item in central_index(task, verify=False)
+                 if item.get("kind") == kind and item.get("filename") == filename and item.get("drive_file_id")),
+                "",
+            )
+            entry = archive.upload_path(
+                task, kind, filename, path, expected_previous_sha256=previous,
+            )
             if entry.get("sha256") != hashlib.sha256(body).hexdigest() or int(entry.get("size") or -1) != len(body):
                 raise EntreNosDoisDriveError("O Google Drive não confirmou a integridade do arquivo.")
             if metadata:
