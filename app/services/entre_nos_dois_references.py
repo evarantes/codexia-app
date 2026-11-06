@@ -29,6 +29,12 @@ def _storage_root() -> Path:
     root = Path(raw).expanduser().resolve()
     if not root.is_absolute():
         raise StudioReferenceError("Diretório privado inválido.")
+    public = (
+        Path(__file__).resolve().parents[1] / "static",
+        Path(__file__).resolve().parents[2] / "generated_assets",
+    )
+    if any(root == p.resolve() or root.is_relative_to(p.resolve()) for p in public):
+        raise StudioReferenceError("O armazenamento privado não pode ficar em diretório público.")
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -88,17 +94,12 @@ def private_storage_health() -> dict:
         return {"ready": False, "reason": "missing_configuration"}
     try:
         root = _storage_root()
-        # Refuse any folder reachable through public static mounts.
-        public = (
-            Path(__file__).resolve().parents[1] / "static",
-            Path(__file__).resolve().parents[2] / "generated_assets",
-        )
-        if any(root == p.resolve() or root.is_relative_to(p.resolve()) for p in public):
-            return {"ready": False, "reason": "public_directory"}
         with tempfile.NamedTemporaryFile(prefix=".studio-writecheck-", dir=root, delete=True) as file:
             file.write(b"ok")
             file.flush()
             os.fsync(file.fileno())
-    except (OSError, ValueError, StudioReferenceError):
+    except StudioReferenceError as exc:
+        return {"ready": False, "reason": "public_directory" if "diretório público" in str(exc) else "not_writable"}
+    except (OSError, ValueError):
         return {"ready": False, "reason": "not_writable"}
     return {"ready": True, "reason": "write_access_verified"}
