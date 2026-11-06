@@ -28,6 +28,15 @@ class StudioOverviewTests(unittest.TestCase):
         self.assertIn('href="/studio/entre-nos-dois/painel"', dashboard)
         self.assertIn('Entre Nós Dois', dashboard)
 
+    def test_interactive_preview_has_no_paid_generation_calls(self):
+        studio = Path("app/static/pages/entre-nos-dois/index.html").read_text(encoding="utf-8")
+        self.assertIn('id="preview-next"', studio)
+        self.assertIn('id="preview-prev"', studio)
+        self.assertIn('function renderPreview()', studio)
+        self.assertIn("previewDialogue=Array.isArray(data.dialogue)", studio)
+        self.assertNotIn('/text-to-speech/', studio)
+        self.assertNotIn('/scene/submit', studio)
+
     def test_direct_studio_page_does_not_expose_protected_data(self):
         page = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "studio_page")
         source = ast.get_source_segment(self.source, page)
