@@ -18,7 +18,7 @@ def summarize_readiness(
         {"key": "voice_ids", "label": "Vozes Andrey e Luciana", "status": "configured", "detail": "Identificadores registrados; acesso real ainda não verificado"},
         {"key": "elevenlabs_key", "label": "Credencial ElevenLabs", "status": "configured" if elevenlabs_configured else "missing", "detail": "Presença da chave; não comprova acesso às vozes"},
         {"key": "fal_key", "label": "Credencial fal.ai", "status": "configured" if fal_configured else "missing", "detail": "Presença da chave; saldo e custo não verificados"},
-        {"key": "private_storage", "label": "Armazenamento privado", "status": "configured" if private_storage_configured else "missing", "detail": "Volume privado configurado" if private_storage_configured else "Configure CODEXIA_STUDIO_PRIVATE_DIR em volume persistente"},
+        {"key": "private_storage", "label": "Armazenamento privado", "status": "configured" if private_storage_configured else "missing", "detail": "Google Drive conectado e volume de metadados pronto" if private_storage_configured else "Conecte o Google Drive nas Configurações e configure o volume privado de metadados"},
         {"key": "gabriel_image", "label": "Referência de Gabriel", "status": "configured" if gabriel else "missing", "detail": "Imagem privada cadastrada" if gabriel else "Imagem ainda não cadastrada"},
         {"key": "helena_image", "label": "Referência de Helena", "status": "configured" if helena else "missing", "detail": "Imagem privada cadastrada" if helena else "Imagem ainda não cadastrada"},
         {"key": "visual_assets", "label": "Imagens oficiais privadas", "status": "configured" if both_ready else "missing", "detail": "Ambas as referências encontradas" if both_ready else "Cadastre ambas as imagens"},
@@ -31,7 +31,7 @@ def summarize_readiness(
         "can_prepare_visual_pilot": bool(private_storage_configured and both_ready),
         "can_generate_paid_audio": False,
         "next_action": (
-            "Configurar armazenamento privado"
+            "Conectar o Google Drive e configurar o volume de metadados"
             if not private_storage_configured
             else "Cadastrar a imagem de Helena"
             if not helena else "Cadastrar a imagem de Gabriel"
