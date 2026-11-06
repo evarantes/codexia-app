@@ -42,6 +42,15 @@ jobs:
           CODEXIA_STAGING_DB_PASSWORD: ci_fake_staging_password_only
           CODEXIA_STAGING_SECRET_KEY: ci_fake_staging_secret_only
         run: docker compose -f docker-compose.entre-nos-dois-staging.yml config --quiet
+      - name: Validate interactive Studio JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          page = Path("app/static/pages/entre-nos-dois/index.html").read_text(encoding="utf-8")
+          source = page.split("<script>", 1)[1].split("</script>", 1)[0]
+          Path("/tmp/entre-nos-dois-ui.js").write_text(source, encoding="utf-8")
+          PY
+          node --check /tmp/entre-nos-dois-ui.js
       - name: Compile standalone voice modules
         run: python -m compileall -q app/studio_staging.py scripts/entre_nos_dois_staging_schema.py scripts/entre_nos_dois_staging_admin.py scripts/entre_nos_dois_smoke.py app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py app/services/entre_nos_dois_references.py
       - name: Test only isolated program contracts
