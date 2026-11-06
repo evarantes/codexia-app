@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
@@ -74,3 +75,30 @@ def host_reference_status(*, user_id: int) -> dict:
         host: reference_file(user_id=user_id, host=host).is_file()
         for host in sorted(HOST_NAMES)
     }
+
+
+def private_storage_health() -> dict:
+    """Verify actual write access without exposing paths or creating paid work.
+
+    This does not prove that the directory is mounted persistently. That still
+    requires an operator to check the Coolify volume configuration.
+    """
+    raw = os.getenv("CODEXIA_STUDIO_PRIVATE_DIR", "").strip()
+    if not raw:
+        return {"ready": False, "reason": "missing_configuration"}
+    try:
+        root = _storage_root()
+        # Refuse any folder reachable through public static mounts.
+        public = (
+            Path(__file__).resolve().parents[1] / "static",
+            Path(__file__).resolve().parents[2] / "generated_assets",
+        )
+        if any(root == p.resolve() or root.is_relative_to(p.resolve()) for p in public):
+            return {"ready": False, "reason": "public_directory"}
+        with tempfile.NamedTemporaryFile(prefix=".studio-writecheck-", dir=root, delete=True) as file:
+            file.write(b"ok")
+            file.flush()
+            os.fsync(file.fileno())
+    except (OSError, ValueError, StudioReferenceError):
+        return {"ready": False, "reason": "not_writable"}
+    return {"ready": True, "reason": "write_access_verified"}
