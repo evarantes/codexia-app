@@ -63,7 +63,13 @@ class SingleTurnPaidTtsTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_creates_single_mp3_and_never_charges_twice(self):
-        with patch("app.services.entre_nos_dois_audio_review._duration_seconds", return_value=2.1):
+        stored = {"present": False}
+        def save_audio(**kwargs):
+            stored["present"] = True
+            return {"duration_seconds": 2.1}
+        with patch("app.services.entre_nos_dois_audio_review._duration_seconds", return_value=2.1), patch(
+            "app.services.entre_nos_dois_tts_single.asset_present", side_effect=lambda **kwargs: stored["present"],
+        ), patch("app.services.entre_nos_dois_tts_single.store_segment_audio", side_effect=save_audio):
             result = self._submit()
             self.assertEqual(result["index"], 1)
             self.assertEqual(result["status"], "awaiting_human_audio_review")
@@ -78,8 +84,7 @@ class SingleTurnPaidTtsTests(unittest.TestCase):
             raise TimeoutError()
         with self.assertRaises(PaidPilotTtsError):
             self._submit(post_audio=uncertain)
-        from app.services.entre_nos_dois_audio_review import audio_file
-        path = audio_file(user_id=42, index=1).with_suffix(".paid-request-pending")
+        path = __import__("pathlib").Path(os.environ["CODEXIA_STUDIO_PRIVATE_DIR"]) / "user-42" / "entre-nos-dois" / "metadata" / "segment-01.paid-request-pending.json"
         self.assertTrue(path.exists())
         with self.assertRaises(PaidPilotTtsError):
             self._submit()
