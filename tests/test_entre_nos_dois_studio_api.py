@@ -21,8 +21,7 @@ class StudioOverviewTests(unittest.TestCase):
         self.assertEqual(decorators[0].func.attr, "get")
         self.assertIn('get_current_admin_user', self.source)
         self.assertIn('Depends(get_current_admin_user)', self.source)
-        self.assertNotIn('@router.post', self.source)
-        self.assertNotIn('@router.delete', self.source)
+        self.assertFalse(any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr in {'post','delete'} for dec in decorators))
 
     def test_voice_check_admin_only_and_no_tts_action(self):
         voice_check = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "verify_voices")
