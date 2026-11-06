@@ -19,7 +19,7 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <header><div><div class="eyebrow">Codexia Studio · Em desenvolvimento</div><h1>Entre Nós Dois</h1><div class="muted">Gabriel &amp; Helena · Programa de família</div></div><a class="back" href="/">Voltar ao Codexia</a></header>
 <main>
 <p class="notice"><strong>Prévia e cadastro privado de personagens.</strong> O envio de imagens não gera áudio, vídeo, não cobra créditos e não publica no YouTube. O envio pago permanece bloqueado até validação e autorização.</p>
-<section class="card" id="studio-login-panel" style="margin-bottom:18px"><h2>Acesso administrativo de homologação</h2><p class="muted">Entre com o administrador deste ambiente. A sessão fica somente nesta aba e não é enviada a outros serviços.</p>
+<section class="card" id="studio-login-panel" style="margin-bottom:18px"><h2>Acesso administrativo de homologação</h2><p class="muted">Entre com o administrador deste ambiente. A autenticação usa somente o Codexia. Uma nova sessão criada aqui fica nesta aba; sessões já abertas no painel principal também são reconhecidas.</p>
 <form id="studio-login-form" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
 <label>E-mail<input id="studio-login-email" type="email" autocomplete="username" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
 <label>Senha<input id="studio-login-password" type="password" autocomplete="current-password" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
@@ -45,7 +45,7 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 const base='/studio/entre-nos-dois/overview';
 const readinessEndpoint='/studio/entre-nos-dois/readiness';
 const studioTokenKey='entre_nos_dois_admin_token';
-const authHeaders=()=>{const token=sessionStorage.getItem(studioTokenKey)||localStorage.getItem('access_token');return token?{'Authorization':'Bearer '+token}:{}};
+const authHeaders=()=>{if(sessionStorage.getItem('entre_nos_dois_logged_out')==='1')return {};const token=sessionStorage.getItem(studioTokenKey)||localStorage.getItem('access_token');return token?{'Authorization':'Bearer '+token}:{}};
 const loginStatus=document.getElementById('studio-login-status');
 document.getElementById('studio-login-form').addEventListener('submit',async(event)=>{
  event.preventDefault();const button=document.getElementById('studio-login-submit');
@@ -60,6 +60,7 @@ document.getElementById('studio-login-form').addEventListener('submit',async(eve
    if(!data.access_token)throw new Error('O login não retornou sessão válida.');
    const admin=await fetch('/studio/entre-nos-dois/overview',{headers:{Authorization:'Bearer '+data.access_token},cache:'no-store'});
    if(!admin.ok)throw new Error('Esta conta não tem permissão administrativa neste ambiente.');
+   sessionStorage.removeItem('entre_nos_dois_logged_out');
    sessionStorage.setItem(studioTokenKey,data.access_token);
    document.getElementById('studio-login-password').value='';
    loginStatus.textContent='Administrador autenticado nesta aba.';
@@ -69,6 +70,7 @@ document.getElementById('studio-login-form').addEventListener('submit',async(eve
 });
 document.getElementById('studio-logout').addEventListener('click',()=>{
  sessionStorage.removeItem(studioTokenKey);
+ sessionStorage.setItem('entre_nos_dois_logged_out','1');
  loginStatus.textContent='Sessão do Studio encerrada nesta aba.';
  for(const k of Object.keys(previews)){URL.revokeObjectURL(previews[k]);delete previews[k]}
  for(const host of ['gabriel','helena'])document.getElementById(host+'-preview').style.display='none';
