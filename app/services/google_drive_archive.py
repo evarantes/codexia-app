@@ -12,6 +12,7 @@ import hashlib
 import mimetypes
 import os
 import re
+import random
 import threading
 import time
 from pathlib import Path
@@ -672,12 +673,32 @@ class GoogleDriveArchive:
                 except Exception as exc:
                     http_response = getattr(exc, "resp", None)
                     http_status = int(getattr(http_response, "status", 0) or 0)
-                    if http_status not in {429, 500, 502, 503, 504} or retry_attempt >= 5:
+                    rate_limited = False
+                    if http_status == 403:
+                        try:
+                            error_body = getattr(exc, "content", b"")
+                            if isinstance(error_body, bytes):
+                                error_body = error_body.decode("utf-8", errors="ignore")
+                            error_payload = json.loads(error_body or "{}")
+                            reasons = [
+                                str(item.get("reason") or "")
+                                for item in ((error_payload.get("error") or {}).get("errors") or [])
+                                if isinstance(item, dict)
+                            ]
+                            rate_limited = any(
+                                reason in {"rateLimitExceeded", "userRateLimitExceeded"}
+                                for reason in reasons
+                            )
+                        except (TypeError, ValueError, AttributeError):
+                            rate_limited = False
+                    retryable_status = http_status in {429, 500, 502, 503, 504}
+                    if (not retryable_status and not rate_limited) or retry_attempt >= 5:
                         raise
                     # Keep the same resumable request and back off on transient
                     # Drive errors instead of failing a whole project on one
                     # throttled or temporarily unavailable chunk.
-                    time.sleep(min(2 ** retry_attempt, 16))
+                    delay = min(2 ** retry_attempt, 16)
+                    time.sleep(delay + random.uniform(0, delay * 0.25))
                     retry_attempt += 1
                     continue
                 if progress_callback and status is not None:
