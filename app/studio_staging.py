@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User
 from app.routers import entre_nos_dois
-from app.routers.auth import create_access_token_for_user, verify_password, get_password_hash, get_current_admin_user
+from app.routers.auth import create_access_token_for_user, verify_password, get_password_hash, get_current_admin_user, get_current_user
 
 
 if os.getenv("APP_ENV", "").strip().lower() != "staging":
@@ -31,6 +31,19 @@ app = FastAPI(
     openapi_url=None,
 )
 app.include_router(entre_nos_dois.router)
+
+
+async def staging_admin(user: User = Depends(get_current_user)):
+    if not user.is_active or not user.is_admin:
+        raise HTTPException(status_code=403, detail="Acesso administrativo necessário.")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Troca de senha obrigatória antes de acessar o Studio.")
+    return user
+
+
+# Studio endpoints use the stricter guard; the password-rotation endpoint below
+# intentionally uses get_current_user to permit the initial password change.
+app.dependency_overrides[get_current_admin_user] = staging_admin
 
 
 @app.post("/token")
@@ -65,9 +78,11 @@ class PasswordChange(BaseModel):
 def staging_change_password(
     payload: PasswordChange,
     db: Session = Depends(get_db),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(get_current_user),
 ):
     """Same-user password rotation; required for the initial staging account."""
+    if not admin.is_active or not admin.is_admin:
+        raise HTTPException(status_code=403, detail="Acesso administrativo necessário.")
     if not verify_password(payload.current_password, admin.hashed_password):
         raise HTTPException(status_code=400, detail="Senha atual incorreta.")
     if (
