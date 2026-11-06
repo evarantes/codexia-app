@@ -9,12 +9,17 @@ services:
       context: .
       dockerfile: Dockerfile.studio-staging
     restart: "no"
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 128
     # O Dockerfile reduzido cria e verifica apenas o schema de homologação.
     environment:
       APP_ENV: staging
       DATABASE_URL: postgresql://codexia_staging:${CODEXIA_STAGING_DB_PASSWORD:?Defina CODEXIA_STAGING_DB_PASSWORD}@studio-db:5432/codexia_staging
       SECRET_KEY: ${CODEXIA_STAGING_SECRET_KEY:?Defina CODEXIA_STAGING_SECRET_KEY}
       CODEXIA_STUDIO_PRIVATE_DIR: /data/studio-private
+      CODEXIA_STUDIO_ENABLE_PAID_TTS: "0"
+      CODEXIA_STUDIO_MAX_TTS_USD: "0"
       # Não configurar ELEVENLABS_API_KEY, FAL_KEY ou tokens do YouTube na homologação.
     ports:
       - "127.0.0.1:18080:8000"
@@ -29,6 +34,9 @@ services:
   studio-db:
     image: postgres:15-alpine
     restart: "no"
+    mem_limit: 512m
+    cpus: "0.75"
+    pids_limit: 100
     environment:
       POSTGRES_USER: codexia_staging
       POSTGRES_PASSWORD: ${CODEXIA_STAGING_DB_PASSWORD:?Defina CODEXIA_STAGING_DB_PASSWORD}
