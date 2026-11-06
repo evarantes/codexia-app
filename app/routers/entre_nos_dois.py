@@ -18,7 +18,7 @@ from app.models import User, Settings
 from app.services.provider_config import resolve_secret, normalize_secret
 from app.services.entre_nos_dois_readiness import summarize_readiness
 from app.services.entre_nos_dois_references import (
-    StudioReferenceError, host_reference_status, reference_file, store_host_reference,
+    StudioReferenceError, host_reference_status, reference_file, store_host_reference, private_storage_health,
 )
 from app.services.entre_nos_dois_voice_check import run_voice_check
 from app.routers.auth import get_current_admin_user
@@ -82,7 +82,8 @@ def readiness(
     own_settings = settings if settings is not None else SimpleNamespace()
     elevenlabs = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
     fal_configured = bool(normalize_secret(os.getenv("FAL_KEY")))
-    storage_configured = bool(os.getenv("CODEXIA_STUDIO_PRIVATE_DIR", "").strip())
+    storage_health = private_storage_health()
+    storage_configured = storage_health["ready"]
     visual_assets = {}
     if storage_configured:
         try:
