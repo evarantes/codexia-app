@@ -22,7 +22,7 @@ from app.services.entre_nos_dois_references import (
 )
 from app.services.entre_nos_dois_voice_check import run_voice_check
 from app.services.entre_nos_dois_audio_review import (
-    MAX_AUDIO_BYTES, StudioAudioError, audio_file, list_segment_audio, store_segment_audio,
+    MAX_AUDIO_BYTES, StudioAudioError, audio_file, list_segment_audio, store_segment_audio, preview_audio_timeline,
 )
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
@@ -176,6 +176,15 @@ def pilot_audio_status(current_user: User = Depends(get_current_admin_user)):
         return list_segment_audio(user_id=current_user.id)
     except (StudioAudioError, OSError) as exc:
         raise HTTPException(status_code=503, detail="Armazenamento privado de áudio indisponível.") from None
+
+
+@router.get("/audio/timeline")
+def pilot_audio_timeline(current_user: User = Depends(get_current_admin_user)):
+    """Measured private MP3 sequence; this is not a rendered video."""
+    try:
+        return preview_audio_timeline(user_id=current_user.id)
+    except (StudioAudioError, OSError):
+        raise HTTPException(status_code=503, detail="Linha do tempo de áudio indisponível.") from None
 
 
 @router.put("/audio/{index}")
