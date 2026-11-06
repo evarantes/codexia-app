@@ -57,7 +57,7 @@ class StudioReferencesTests(unittest.TestCase):
     def test_private_storage_write_probe_succeeds(self):
         with patch("app.services.entre_nos_dois_references.drive_storage_health", return_value={"ready": True, "reason": "drive_configured"}):
             result = private_storage_health(user_id=42)
-        self.assertEqual(result, {"ready": True, "reason": "drive_configured"})
+        self.assertEqual(result, {"ready": True, "reason": "drive_and_metadata_ready"})
 
     def test_public_static_directory_fails_probe(self):
         with patch("app.services.entre_nos_dois_references.drive_storage_health", return_value={"ready": False, "reason": "google_drive_not_configured"}):
