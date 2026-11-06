@@ -6,6 +6,9 @@ on:
     paths:
       - "app/services/entre_nos_dois*.py"
       - "tests/test_entre_nos_dois*.py"
+      - "app/routers/entre_nos_dois.py"
+      - "app/static/pages/entre-nos-dois/**"
+      - "app/main.py"
       - ".github/workflows/entre-nos-dois-tests.yml"
   workflow_dispatch:
 
@@ -41,4 +44,5 @@ jobs:
             tests.test_entre_nos_dois_lipsync_gate \
             tests.test_entre_nos_dois_fal_sync3 \
             tests.test_entre_nos_dois_sync3_queue \
-            tests.test_entre_nos_dois_sync3_result
+            tests.test_entre_nos_dois_sync3_result \
+            tests.test_entre_nos_dois_studio_api
