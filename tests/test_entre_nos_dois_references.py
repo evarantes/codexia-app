@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from app.services.entre_nos_dois_references import (
-    StudioReferenceError, host_reference_status, reference_file, store_host_reference,
+    StudioReferenceError, host_reference_status, reference_file, store_host_reference, private_storage_health,
 )
 
 
@@ -43,6 +43,21 @@ class StudioReferencesTests(unittest.TestCase):
     def test_unknown_host_rejected(self):
         with self.assertRaises(StudioReferenceError):
             store_host_reference(user_id=42, host="../Helena", body=self.image)
+
+    def test_private_storage_write_probe_succeeds(self):
+        result = private_storage_health()
+        self.assertEqual(result, {"ready": True, "reason": "write_access_verified"})
+        self.assertNotIn("CODEXIA_STUDIO_PRIVATE_DIR", str(result))
+
+    def test_public_static_directory_fails_probe(self):
+        public_dir = Path(__file__).resolve().parents[1] / "app" / "static"
+        with patch.dict(os.environ, {"CODEXIA_STUDIO_PRIVATE_DIR": str(public_dir)}):
+            result = private_storage_health()
+        self.assertEqual(result, {"ready": False, "reason": "public_directory"})
+
+    def test_no_env_variable_fails_probe(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(private_storage_health()["reason"], "missing_configuration")
 
     def test_no_volume_configured_fails_closed(self):
         with patch.dict(os.environ, {}, clear=True):
