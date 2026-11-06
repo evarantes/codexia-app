@@ -72,6 +72,25 @@ def overview(current_user: User = Depends(get_current_admin_user)):
         "auto_publish": False,
     }
 
+@router.get("/voice-generation-gate")
+def voice_generation_gate(current_user: User = Depends(get_current_admin_user)):
+    """Non-secret administrative availability; no API calls or price guarantee."""
+    enabled = os.getenv("CODEXIA_STUDIO_ENABLE_PAID_TTS") == "1"
+    try:
+        ceiling = float(os.getenv("CODEXIA_STUDIO_MAX_TTS_USD", "0"))
+        enabled = enabled and 0 < ceiling <= 1000
+    except ValueError:
+        enabled = False
+        ceiling = 0
+    return {
+        "enabled": enabled,
+        "server_max_usd_per_turn": ceiling if enabled else None,
+        "requires_account_verified_rate": True,
+        "requires_explicit_per_turn_approval": True,
+        "auto_publish": False,
+    }
+
+
 @router.get("/voice-cost-worksheet")
 def voice_cost_worksheet(
     usd_per_1000_characters: str | None = None,
