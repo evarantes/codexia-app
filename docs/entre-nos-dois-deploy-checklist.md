@@ -98,6 +98,23 @@ Não colocar `ELEVENLABS_API_KEY` em logs ou no repositório. No Compose padrão
 de homologação a geração continua **desabilitada** e nenhuma chave paga é
 configurada. A instalação desse código não autoriza despesas.
 
+## Preparação não paga das quatro cenas de lip-sync
+
+O endpoint administrativo `GET /studio/entre-nos-dois/scene/readiness`
+confere os dois retratos privados e todos os quatro MP3s, mede os tempos e
+monta uma estimativa em USD para cada cena, utilizando uma tarifa de referência
+de planejamento ou a tarifa inserida pelo operador por segundo.
+O painel exibe quais ativos faltam antes de considerar as cenas prontas
+para *preparação*. Essa resposta não contém caminhos de disco ou URLs
+dos arquivos privados.
+
+**Não equivale à geração de vídeo:** a tarifa não está confirmada na conta,
+não são criadas URLs assinadas, nenhuma imagem/voz é exportada a provedores,
+não há chamadas pagas nem botão de publicação. A autorização de envio externo
+de retratos/áudios e a confirmação de tarifa, duração máxima do modelo e
+orçamento para a primeira cena precisam ser tratadas separadamente antes
+de liberar a chamada à fal.ai.
+
 ## Ainda não disponível
 
 - O painel pode importar e revisar áudios; a síntese paga por fala só funciona se o operador habilitar explicitamente o recurso e configurar credenciais/teto. Vídeo e lip-sync ainda não são gerados pelo Studio.
