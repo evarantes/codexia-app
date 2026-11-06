@@ -90,6 +90,19 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     code, body = call(base, "/studio/entre-nos-dois/voice-cost-worksheet?usd_per_1000_characters=0.25", token=token)
     assert code == 200 and json.loads(body)["estimate_only"] is True
 
+    # Even an authenticated admin cannot spend without explicit environment switch.
+    code, body = call(
+        base, "/studio/entre-nos-dois/audio/generate/1", token=token, method="POST",
+        data=json.dumps({
+            "quote_digest": budget["manifest_sha256"],
+            "usd_per_1000_characters": "0.25",
+            "approved_max_usd": "0.10",
+            "confirmation": "AUTORIZO FALA 1",
+            "rate_checked_in_provider_account": True,
+        }).encode(), content_type="application/json",
+    )
+    assert code == 403, "Staging must default to no paid TTS even with an approved payload."
+
     # Real 1-second disposable MP3 with no speech or copyrighted content.
     mp3 = subprocess.run(
         ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
@@ -122,7 +135,7 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert call(base, "/token", method="POST", data=new_login,
                 content_type="application/x-www-form-urlencoded")[0] == 200
 
-    return {"staging_e2e": "passed", "checks": 23, "billable_calls": 0, "published": False}
+    return {"staging_e2e": "passed", "checks": 24, "billable_calls": 0, "published": False}
 
 
 if __name__ == "__main__":
