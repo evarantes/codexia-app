@@ -10,6 +10,7 @@ import os
 from datetime import timedelta
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User
 from app.routers import entre_nos_dois
-from app.routers.auth import create_access_token_for_user, verify_password
+from app.routers.auth import create_access_token_for_user, verify_password, get_password_hash, get_current_admin_user
 
 
 if os.getenv("APP_ENV", "").strip().lower() != "staging":
@@ -52,6 +53,34 @@ async def staging_token(
         "token_type": "bearer",
         "must_change_password": bool(user.must_change_password),
     }
+
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/staging/change-password")
+def staging_change_password(
+    payload: PasswordChange,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin_user),
+):
+    """Same-user password rotation; required for the initial staging account."""
+    if not verify_password(payload.current_password, admin.hashed_password):
+        raise HTTPException(status_code=400, detail="Senha atual incorreta.")
+    if (
+        len(payload.new_password) < 16
+        or len(payload.new_password) > 72
+        or payload.new_password == payload.current_password
+    ):
+        raise HTTPException(status_code=400, detail="A nova senha deve ser diferente e ter entre 16 e 72 caracteres.")
+    admin.hashed_password = get_password_hash(payload.new_password)
+    admin.must_change_password = False
+    db.add(admin)
+    db.commit()
+    return {"changed": True, "must_change_password": False}
 
 
 @app.get("/health")
