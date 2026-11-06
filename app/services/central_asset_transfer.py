@@ -183,15 +183,19 @@ def central_index(task, verify=True):
     return list(unique.values())
 
 
-def find_drive_asset(kind, filename):
-    """Find the most recently indexed Drive copy for public media routes."""
+def find_drive_asset(kind, filename, task=None):
+    """Find an indexed Drive copy, optionally within one exact project."""
     from app.services.production_manifest import _root_dir, _read_json
     if kind not in EXTENSIONS or Path(str(filename or '')).name != str(filename or ''):
         return None
     matches = []
     try:
-        indexes = list(_root_dir().glob('*/central-index.json'))
-        indexes.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        if task is not None:
+            candidate = index_path(task)
+            indexes = [candidate] if candidate.is_file() else []
+        else:
+            indexes = list(_root_dir().glob('*/central-index.json'))
+            indexes.sort(key=lambda item: item.stat().st_mtime, reverse=True)
         for path in indexes:
             for entry in (_read_json(path).get('files') or []):
                 if (entry.get('kind') == kind and entry.get('filename') == filename
