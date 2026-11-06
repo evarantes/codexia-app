@@ -6,13 +6,16 @@ pelo administrador. Não faz geração paga, lip-sync ou publicação automátic
 from __future__ import annotations
 
 import os
+import secrets
+import time
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from pathlib import Path
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
+from google_auth_oauthlib.flow import Flow
 
 from app.database import get_db
 from app.models import User, Settings, UnifiedVideo
@@ -364,3 +367,126 @@ def play_pilot_audio(index: int, current_user: User = Depends(get_current_admin_
         return response
     except EntreNosDoisDriveError:
         raise HTTPException(status_code=503, detail="Áudio privado indisponível no Google Drive.") from None
+
+
+# OAuth separado para associar o projeto a um canal adicional sem substituir
+# o token global já usado pelo restante do Codexia.
+_CHANNEL_OAUTH_STATES: dict[str, dict] = {}
+_CHANNEL_OAUTH_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube.upload",
+]
+
+
+class ProjectChannelBinding(BaseModel):
+    account_id: int
+
+
+@router.get("/channels")
+def project_channels(current_user: User = Depends(get_current_admin_user)):
+    from app.services.youtube_channel_accounts import list_project_channels
+    try:
+        return list_project_channels(user_id=current_user.id, project_key="entre-nos-dois")
+    except Exception:
+        raise HTTPException(status_code=503, detail="Não foi possível carregar os canais do projeto.") from None
+
+
+@router.post("/channels/link")
+def bind_project_channel(
+    payload: ProjectChannelBinding,
+    current_user: User = Depends(get_current_admin_user),
+):
+    from app.services.youtube_channel_accounts import link_channel, YouTubeChannelAccountError
+    try:
+        return link_channel(
+            user_id=current_user.id, project_key="entre-nos-dois", account_id=payload.account_id,
+        )
+    except YouTubeChannelAccountError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/channels/connect")
+def connect_project_channel(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    settings = (
+        db.query(Settings).filter(Settings.user_id == current_user.id)
+        .order_by(Settings.id.desc()).first()
+    )
+    client_id = (getattr(settings, "youtube_client_id", None) or os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
+    client_secret = (getattr(settings, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=409, detail="Configure o cliente OAuth do YouTube em Configurações do Codexia.")
+    redirect_uri = str(request.url_for("entre_nos_dois_youtube_callback"))
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
+    flow = Flow.from_client_config(client_config, scopes=_CHANNEL_OAUTH_SCOPES)
+    flow.redirect_uri = redirect_uri
+    state = secrets.token_urlsafe(32)
+    auth_url, _ = flow.authorization_url(
+        prompt="consent", access_type="offline",
+        include_granted_scopes="true", state=state,
+    )
+    now = time.time()
+    for old_state, entry in list(_CHANNEL_OAUTH_STATES.items()):
+        if float(entry.get("created_at") or 0) + 600 < now:
+            _CHANNEL_OAUTH_STATES.pop(old_state, None)
+    _CHANNEL_OAUTH_STATES[state] = {
+        "created_at": now, "user_id": int(current_user.id),
+        "redirect_uri": redirect_uri,
+    }
+    return RedirectResponse(auth_url, status_code=303)
+
+
+@router.get("/channels/callback", name="entre_nos_dois_youtube_callback")
+def project_channel_oauth_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    state = str(request.query_params.get("state") or "")
+    entry = _CHANNEL_OAUTH_STATES.pop(state, None)
+    if not entry or float(entry.get("created_at") or 0) + 600 < time.time():
+        return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=expired", status_code=303)
+    if request.query_params.get("error"):
+        return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=cancelled", status_code=303)
+    code = str(request.query_params.get("code") or "").strip()
+    if not code:
+        return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=failed", status_code=303)
+    user_id = int(entry["user_id"])
+    settings = (
+        db.query(Settings).filter(Settings.user_id == user_id)
+        .order_by(Settings.id.desc()).first()
+    )
+    client_id = (getattr(settings, "youtube_client_id", None) or os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
+    client_secret = (getattr(settings, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
+    if not client_id or not client_secret:
+        return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=configuration", status_code=303)
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [entry["redirect_uri"]],
+        }
+    }
+    flow = Flow.from_client_config(client_config, scopes=_CHANNEL_OAUTH_SCOPES)
+    flow.redirect_uri = entry["redirect_uri"]
+    try:
+        flow.fetch_token(code=code)
+        from app.services.youtube_channel_accounts import save_connected_channel, YouTubeChannelAccountError
+        save_connected_channel(
+            user_id=user_id, project_key="entre-nos-dois", credentials=flow.credentials,
+        )
+    except Exception:
+        return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=failed", status_code=303)
+    return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=success", status_code=303)
