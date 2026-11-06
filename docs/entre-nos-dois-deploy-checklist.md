@@ -94,9 +94,19 @@ e recusa a criação quando já existe qualquer usuário. **Nunca** utilize
 a mesma senha do Codexia de produção. O usuário de homologação precisa
 alterar sua senha no primeiro acesso.
 
-Depois, fazer login em `/token` pelo fluxo normal do Codexia,
-sem gravar o token no repositório, e executar os testes autenticados com
-`CODEXIA_STUDIO_SMOKE_TOKEN` local, como explicado acima.
+Depois, abrir `http://127.0.0.1:18080/studio/entre-nos-dois/painel`
+**no navegador do próprio host** (ou através de túnel SSH local autorizado).
+O Studio agora oferece formulário de login administrativo. O login envia
+as credenciais para o endpoint `/token` da **mesma origem** e verifica
+a permissão no endpoint protegido antes de guardar a sessão temporária na aba.
+Em acesso remoto, **não exponha** a porta de homologação publicamente para
+facilitar o login: use um túnel SSH ou HTTPS protegido. Não usar credenciais
+de produção. A opção Sair bloqueia o aproveitamento de uma sessão da
+interface principal naquela aba.
+
+Para o smoke automatizado autenticado, obter um token de homologação pelo
+fluxo normal do Codexia e configurar `CODEXIA_STUDIO_SMOKE_TOKEN` somente
+no ambiente local, como explicado acima. Nunca imprima o token nos logs.
 
 Para desligar sem apagar a biblioteca de imagens, use:
 
