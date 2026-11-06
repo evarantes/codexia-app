@@ -75,8 +75,9 @@ class PrivatePilotAudioTests(unittest.TestCase):
             store_segment_audio(user_id=42, index=1, body=b"x" * (10 * 1024 * 1024 + 1))
 
     def test_drive_failure_is_fail_closed(self):
+        from app.services.entre_nos_dois_drive import EntreNosDoisDriveError
         with patch("app.services.entre_nos_dois_audio_review._duration_seconds", return_value=2.5), patch(
-            "app.services.entre_nos_dois_audio_review.store_asset_bytes", side_effect=RuntimeError("Drive unavailable"),
+            "app.services.entre_nos_dois_audio_review.store_asset_bytes", side_effect=EntreNosDoisDriveError("Drive unavailable"),
         ):
             with self.assertRaises(StudioAudioError):
                 store_segment_audio(user_id=42, index=1, body=b"example")
