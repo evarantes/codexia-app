@@ -470,7 +470,7 @@ document.querySelector('#save-project-channel').addEventListener('click',async()
  }catch(error){message.textContent=error.message}
 });
 const oauthResult=new URLSearchParams(location.search).get('youtube_oauth');
-if(oauthResult){const messages={success:'Canal autorizado e vinculado ao Entre Nós Dois.',cancelled:'Conexão cancelada pelo Google.',expired:'A autorização expirou. Tente novamente.',configuration:'Confira as credenciais OAuth do YouTube em Configurações.',failed:'Não foi possível concluir a autorização do canal.'};document.querySelector('#project-channel-message').textContent=messages[oauthResult]||'Resultado da conexão do YouTube.'}
+if(oauthResult){document.querySelectorAll('.studio-tab').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.target==='tab-channels')));document.querySelector('#tab-preparation').hidden=true;document.querySelector('#tab-videos').hidden=true;document.querySelector('#tab-channels').hidden=false;const messages={success:'Canal autorizado e vinculado ao Entre Nós Dois.',cancelled:'Conexão cancelada pelo Google.',expired:'A autorização expirou. Tente novamente.',configuration:'Confira as credenciais OAuth do YouTube em Configurações.',failed:'Não foi possível concluir a autorização do canal.'};document.querySelector('#project-channel-message').textContent=messages[oauthResult]||'Resultado da conexão do YouTube.'}
 document.querySelector('#refresh-project-videos').addEventListener('click',refreshProjectVideos);
 document.querySelectorAll('.studio-tab').forEach(button=>button.addEventListener('click',async()=>{
  const target=button.dataset.target;
