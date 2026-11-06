@@ -12,10 +12,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
+from app.services.entre_nos_dois_references import StudioReferenceError
 from app.services.entre_nos_dois_audio_review import (
     StudioAudioError, audio_file, store_segment_audio, _segment,
 )
-from app.services.entre_nos_dois_cost_worksheet import worksheet, _rate
+from app.services.entre_nos_dois_cost_worksheet import worksheet, CostWorksheetError
 from app.services.entre_nos_dois_tts_adapter import (
     ELEVEN_API_ROOT, VOICE_MODEL, AUDIO_FORMAT, _post_elevenlabs,
 )
@@ -57,7 +58,10 @@ def submit_one_turn(
     segment = _segment(index)
     if confirmation != f"AUTORIZO FALA {index}" or rate_checked_in_provider_account is not True:
         raise PaidPilotTtsError("Confirmação explícita da fala e tarifa exigida.")
-    quote = worksheet(usd_per_1000_characters=usd_per_1000_characters)
+    try:
+        quote = worksheet(usd_per_1000_characters=usd_per_1000_characters)
+    except CostWorksheetError as exc:
+        raise PaidPilotTtsError(str(exc)) from None
     if quote_digest != quote["manifest_sha256"]:
         raise PaidPilotTtsError("Roteiro ou vozes mudaram após o orçamento.")
     estimated = _amount(quote["segments"][index - 1]["estimated_usd"])
@@ -67,7 +71,7 @@ def submit_one_turn(
 
     try:
         destination = audio_file(user_id=user_id, index=index)
-    except (StudioAudioError, OSError) as exc:
+    except (StudioAudioError, StudioReferenceError, OSError) as exc:
         raise PaidPilotTtsError("Armazenamento privado indisponível.") from None
     if destination.exists():
         raise PaidPilotTtsError("Já existe áudio nesta fala; revisão antes de qualquer nova cobrança.")
@@ -76,7 +80,6 @@ def submit_one_turn(
     try:
         result = verify_voices(api_key=api_key)
         checked = {v["speaker"]: v["voice_id"] for v in result.get("checked", [])}
-        canonical = worksheet()
         from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
         manifest = prepare_speech_manifest()
         if not result.get("all_accessible") or checked != manifest["approved_voices"]:
