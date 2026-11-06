@@ -33,6 +33,10 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button> <button id="verify-voices" type="button">Verificar vozes (sem gerar áudio)</button><p id="voice-check-result" class="muted" role="status" aria-live="polite">A disponibilidade real das vozes ainda não foi consultada.</p></section>
 </div>
 <section class="card" style="margin-top:18px"><h2>Imagens oficiais para o teste</h2><p class="muted">Envie uma imagem separada de cada personagem (JPG, PNG ou WebP, até 8 MB). Ficam armazenadas em área privada e não são enviadas a provedores nesta etapa.</p><div class="grid"><div><label for="gabriel-upload">Gabriel</label><input id="gabriel-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-gabriel" type="button">Salvar Gabriel</button><p id="gabriel-status" class="muted">Ainda não verificado.</p><img id="gabriel-preview" alt="Referência privada de Gabriel" style="display:none;width:100%;max-width:220px;border-radius:10px"></div><div><label for="helena-upload">Helena</label><input id="helena-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-helena" type="button">Salvar Helena</button><p id="helena-status" class="muted">Ainda não verificado.</p><img id="helena-preview" alt="Referência privada de Helena" style="display:none;width:100%;max-width:220px;border-radius:10px"></div></div><p id="upload-message" class="muted" role="status"></p></section>
+<section class="card" style="margin-top:18px"><h2>Revisão de áudio — quatro falas</h2>
+<p class="muted">Importe MP3s previamente gerados com as vozes escolhidas para ouvir e conferir o diálogo. O Studio não sintetiza voz nem gera custos nesta etapa. Cada arquivo é privado, limitado a 10 MB e 45 segundos; a duração será medida automaticamente.</p>
+<div id="audio-review"><p class="muted">Faça login para verificar as quatro faixas.</p></div>
+<p id="audio-review-message" role="status" class="muted"></p></section>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div><p id="next-action" class="notice" role="status" aria-live="polite">Verificando próximo passo...</p></section>
 <section class="card" style="margin-top:18px"><h2>Prévia do episódio — sem custo</h2><p class="muted">Simulação visual do roteiro com imagens privadas cadastradas: não reproduz as vozes Andrey/Luciana nem vídeo com sincronização labial. Clique para conferir os turnos antes da produção.</p>
 <div id="episode-preview" style="border:1px solid #596682;background:linear-gradient(115deg,#22334d,#2e243e);border-radius:14px;min-height:195px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px" aria-live="polite">
@@ -115,6 +119,7 @@ document.getElementById('studio-logout').addEventListener('click',()=>{
  sessionStorage.setItem('entre_nos_dois_logged_out','1');
  loginStatus.textContent='Sessão do Studio encerrada nesta aba.';
  for(const k of Object.keys(previews)){URL.revokeObjectURL(previews[k]);delete previews[k]}
+ releaseAudioPreviews();document.getElementById('audio-review').textContent='Faça login para consultar as faixas.';
  for(const host of ['gabriel','helena'])document.getElementById(host+'-preview').style.display='none';
  document.getElementById('hosts').textContent='Faça login como administrador.';
  document.getElementById('dialogue').replaceChildren();
@@ -123,6 +128,41 @@ document.getElementById('studio-logout').addEventListener('click',()=>{
 });
 const studioFetch=(url,options={})=>fetch(url,{...options,cache:'no-store',headers:{...authHeaders(),...(options.headers||{})}});
 const previews={};
+const audioPreviewUrls={};
+function releaseAudioPreviews(){for(const k of Object.keys(audioPreviewUrls)){URL.revokeObjectURL(audioPreviewUrls[k]);delete audioPreviewUrls[k]}}
+async function refreshAudioReview(){
+ const holder=document.getElementById('audio-review');
+ const result=await studioFetch('/studio/entre-nos-dois/audio');
+ if(!result.ok){holder.textContent='Áudios indisponíveis: verifique o login e o volume privado.';return}
+ const status=await result.json();
+ releaseAudioPreviews();holder.replaceChildren();
+ for(const segment of status.segments||[]){
+  const row=document.createElement('div');row.style.cssText='border-top:1px solid #364557;padding:14px 0';
+  const label=document.createElement('p');label.textContent='Fala '+segment.index+' · '+segment.speaker+' — '+(segment.uploaded?(segment.duration_seconds+'s de áudio privado'):'aguardando MP3');
+  const input=document.createElement('input');input.type='file';input.accept='.mp3,audio/mpeg';input.setAttribute('aria-label','MP3 da fala '+segment.index);
+  const button=document.createElement('button');button.type='button';button.textContent='Salvar áudio '+segment.index;
+  button.addEventListener('click',async()=>{
+   const file=input.files[0],message=document.getElementById('audio-review-message');
+   if(!file){message.textContent='Selecione primeiro um MP3.';return}
+   if(file.size>10*1024*1024){message.textContent='O arquivo excede 10 MB.';return}
+   button.disabled=true;message.textContent='Conferindo áudio e salvando em área privada...';
+   try{
+    const saved=await studioFetch('/studio/entre-nos-dois/audio/'+segment.index,{method:'PUT',headers:{'Content-Type':'audio/mpeg'},body:file});
+    if(!saved.ok){const details=await saved.json().catch(()=>({}));throw new Error(details.detail||'Falha ao salvar áudio.')}
+    message.textContent='Fala '+segment.index+' salva para revisão, sem publicação.';
+    await refreshAudioReview();
+   }catch(error){message.textContent=error.message}finally{button.disabled=false}
+  });
+  row.append(label,input,button);
+  if(segment.uploaded){
+   const player=document.createElement('audio');player.controls=true;player.preload='none';player.setAttribute('aria-label','Ouvir fala '+segment.index);
+   const downloaded=await studioFetch('/studio/entre-nos-dois/audio/'+segment.index+'/file');
+   if(downloaded.ok){audioPreviewUrls[segment.index]=URL.createObjectURL(await downloaded.blob());player.src=audioPreviewUrls[segment.index];row.append(player)}
+  }
+  holder.append(row);
+ }
+}
+
 let previewDialogue=[],previewIndex=0;
 function renderPreview(){
  const t=previewDialogue[previewIndex];
@@ -191,6 +231,7 @@ async function refresh(){
    }
    document.querySelector('#disclosure').textContent=escapeText(data.disclosure);
    try{await updateHostImages()}catch(err){document.getElementById('upload-message').textContent=err.message}
+   try{await refreshAudioReview()}catch(err){document.getElementById('audio-review-message').textContent=err.message}
    const readiness=document.querySelector('#readiness');
    readiness.replaceChildren();
    const statusResp=await studioFetch(readinessEndpoint);
