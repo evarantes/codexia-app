@@ -14,6 +14,7 @@ from mutagen.mp3 import MP3, HeaderNotFoundError
 
 from app.services.entre_nos_dois_references import StudioReferenceError, _storage_root
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
+from app.services.entre_nos_dois_drive import EntreNosDoisDriveError, find_asset, store_asset_bytes
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 MIN_DURATION = 0.2
@@ -57,28 +58,18 @@ def store_segment_audio(*, user_id: int, index: int, body: bytes) -> dict:
         raise StudioAudioError("Áudio inválido ou acima de 10 MB.")
     seconds = _duration_seconds(body)
     try:
-        path = audio_file(user_id=user_id, index=index)
-    except StudioReferenceError as exc:
+        store_asset_bytes(
+            user_id=user_id, kind="audio", filename=f"segment-{index:02d}.mp3",
+            body=body, metadata={"duration_seconds": seconds, "index": index, "speaker": planned["speaker"]},
+        )
+    except EntreNosDoisDriveError as exc:
         raise StudioAudioError(str(exc)) from None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".uploading")
-    try:
-        fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(body)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp, path)
-        finally:
-            temp.unlink(missing_ok=True)
-    except FileExistsError:
-        raise StudioAudioError("Outro upload deste trecho está em andamento.") from None
     return {
         "index": index,
         "speaker": planned["speaker"],
         "stored": True,
         "private": True,
+        "storage": "google_drive",
         "duration_seconds": seconds,
         "review_status": "awaiting_human_review",
         "auto_publish": False,
@@ -90,15 +81,18 @@ def list_segment_audio(*, user_id: int) -> dict:
     for segment in prepare_speech_manifest()["segments"]:
         index = segment["index"]
         try:
-            path = audio_file(user_id=user_id, index=index)
-        except StudioReferenceError as exc:
+            entry = find_asset(user_id=user_id, kind="audio", filename=f"segment-{index:02d}.mp3")
+        except EntreNosDoisDriveError as exc:
             raise StudioAudioError(str(exc)) from None
-        exists = path.is_file()
         seconds = None
-        if exists:
+        exists = entry is not None
+        if entry:
             try:
-                seconds = _duration_seconds(path.read_bytes())
-            except StudioAudioError:
+                seconds = float(entry.get("duration_seconds"))
+                if not MIN_DURATION <= seconds <= MAX_DURATION:
+                    exists = False
+                    seconds = None
+            except (TypeError, ValueError):
                 exists = False
         segments.append({
             "index": index,
