@@ -9,6 +9,7 @@ import os
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pathlib import Path
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,13 @@ from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, 
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
 
 router = APIRouter(prefix="/studio/entre-nos-dois", tags=["studio-entre-nos-dois"])
+
+@router.get("/painel", include_in_schema=False)
+def studio_page():
+    """HTML shell only. All pilot data endpoints remain JWT admin-protected."""
+    path = Path(__file__).resolve().parents[1] / "static" / "pages" / "entre-nos-dois" / "index.html"
+    return FileResponse(str(path), media_type="text/html", headers={"Cache-Control": "no-store"})
+
 
 
 @router.get("/overview")
