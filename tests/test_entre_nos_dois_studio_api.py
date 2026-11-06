@@ -24,6 +24,15 @@ class StudioOverviewTests(unittest.TestCase):
         self.assertNotIn('@router.post', self.source)
         self.assertNotIn('@router.delete', self.source)
 
+    def test_voice_check_admin_only_and_no_tts_action(self):
+        voice_check = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "verify_voices")
+        source = ast.get_source_segment(self.source, voice_check)
+        self.assertIn('Depends(get_current_admin_user)', source)
+        self.assertIn('run_voice_check(', source)
+        self.assertNotIn('generate_pilot_audio(', source)
+        self.assertNotIn('submit_first_sync3_scene(', source)
+        self.assertNotIn('api_key=', source)
+
     def test_overview_disallows_live_generation_and_secrets(self):
         self.assertIn('"auto_publish": False', self.source)
         self.assertIn('"production_ready": False', self.source)
