@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir \
     "uvicorn>=0.27,<1.0" \
     "sqlalchemy>=2.0,<3.0" \
     "psycopg2-binary>=2.9,<3.0" \
+    "psycopg[binary]>=3.1,<4.0" \
     "python-multipart>=0.0.9" \
     "python-jose[cryptography]>=3.3,<4.0" \
     "bcrypt>=4,<5" \
