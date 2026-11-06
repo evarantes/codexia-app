@@ -180,12 +180,13 @@
     const r = server.resources || {};
     const memory = r.memory || {};
     const available = Number(memory.available_mb || 0);
-    const memoryTone = available <= 384 ? 'critical' : available <= 768 ? 'warning' : 'good';
+    const memoryKnown = Number(memory.total_mb || 0) > 0;
+    const memoryTone = !memoryKnown ? 'good' : available <= 384 ? 'critical' : available <= 768 ? 'warning' : 'good';
     target.append(metricRow(
       'RAM usada',
       `${mb(memory.used_mb)} / ${mb(memory.total_mb)} · ${number(memory.used_percent)}%`,
       memory.used_percent,
-      'Ideal: mais de 768 MB livres · crítico: 384 MB ou menos.',
+      'Ideal: >768 MB livres · atenção: 384–768 MB · crítico: ≤384 MB.',
       memoryTone,
     ));
     const swap = r.swap || {};
@@ -196,7 +197,7 @@
         'Swap usada',
         `${mb(swap.used_mb)} / ${mb(swap.total_mb)} · ${number(swapPercent)}%`,
         swapPercent,
-        'Ideal: abaixo de 85% · atenção: 85–94% · crítico: 95% ou mais.',
+        'Ideal: <85% · atenção: 85–94% · crítico: ≥95%.',
         swapTone,
       ));
     }
@@ -208,7 +209,7 @@
         'Carga CPU',
         `${number(cpu.load_1m)} · ${number(cpu.logical_cores, 0)} núcleos`,
         null,
-        'Ideal: carga por núcleo abaixo de 2,5.',
+        'Ideal: carga por núcleo <2,5 · acima disso, atenção.',
         cpuTone,
       ));
     }
@@ -223,7 +224,7 @@
         'Livre / total',
         `${gb(freeBytes)} / ${gb(disk.total_bytes)} · ${number(disk.used_percent)}% usado`,
         disk.used_percent,
-        'Ideal: mais de 5 GB livres · atenção: até 5 GB · crítico: 2 GB ou menos.',
+        'Ideal: >5 GB livres · atenção: >2–5 GB · crítico: ≤2 GB.',
         diskTone,
       ));
       target.append(entry);
