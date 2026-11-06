@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entre Nós Dois — Studio Codexia</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,sans-serif;color:#e8eaf2;background:#101827}
+*{box-sizing:border-box}body{margin:0}header{padding:24px max(20px,calc((100vw - 1080px)/2));background:linear-gradient(115deg,#262e55,#12202c);display:flex;align-items:center;justify-content:space-between;gap:14px}
+h1{font-size:clamp(22px,4vw,34px);margin:4px 0}.eyebrow{color:#b8c8e7;letter-spacing:.12em;font-size:12px;text-transform:uppercase}.back{color:#fff;text-decoration:none;border:1px solid #7183ab;padding:9px 14px;border-radius:10px}
+main{max-width:1080px;margin:auto;padding:26px 20px 60px}.notice{background:#202f43;border-left:4px solid #f4c66b;padding:14px;border-radius:9px;margin:0 0 22px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{border:1px solid #364557;border-radius:16px;background:#192539;padding:20px}.card h2{margin:0 0 12px;font-size:19px}
+.muted{color:#b1bfd5}.avatar{width:42px;height:42px;border-radius:12px;background:#364c75;display:inline-grid;place-items:center;font-weight:800;margin-right:12px}.voice{display:flex;align-items:center;margin:12px 0}
+ol{padding-left:22px}li{line-height:1.6;margin:12px 0}li strong{color:#ead49e}.status{color:#f0cb77;font-weight:700}.ready{color:#84d9b0;font-weight:700}footer{margin-top:24px;color:#adbad0;font-size:13px}
+button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:#29456e;color:white;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}button:hover:not(:disabled){background:#37598d}
+@media(max-width:720px){.grid{grid-template-columns:1fr}header{padding:22px 20px}}
+</style>
+</head>
+<body>
+<header><div><div class="eyebrow">Codexia Studio · Em desenvolvimento</div><h1>Entre Nós Dois</h1><div class="muted">Gabriel &amp; Helena · Programa de família</div></div><a class="back" href="/">Voltar ao Codexia</a></header>
+<main>
+<p class="notice"><strong>Ambiente de prévia, somente leitura.</strong> Nenhum botão nesta tela gera áudio, vídeo, cobra créditos ou publica no YouTube. O envio pago permanece bloqueado até validação e autorização.</p>
+<div class="grid">
+<section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais devem ser carregadas em armazenamento privado antes de qualquer animação.</p></section>
+<section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button></section>
+</div>
+<section class="card" style="margin-top:18px"><h2>Diálogo do teste</h2><ol id="dialogue"><li class="muted">Carregando roteiro...</li></ol><p class="muted" id="disclosure"></p></section>
+<footer>O piloto usa vozes e personagens virtuais. A duração só poderá ser confirmada após a geração e medição dos áudios.</footer>
+</main>
+<script>
+const base='/studio/entre-nos-dois/overview';
+const escapeText=x=>String(x??'');
+async function refresh(){
+ const hosts=document.querySelector('#hosts'),pilot=document.querySelector('#pilot'),dialogue=document.querySelector('#dialogue');
+ try{
+   const response=await fetch(base,{credentials:'same-origin',cache:'no-store'});
+   if(response.status===401||response.status===403){throw new Error('Acesso restrito. Faça login como administrador.');}
+   if(!response.ok)throw new Error('Não foi possível consultar o estado do piloto.');
+   const data=await response.json();
+   hosts.replaceChildren();
+   for(const host of data.hosts||[]){
+     const row=document.createElement('div');row.className='voice';
+     const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=(host.name||'?')[0];
+     const label=document.createElement('span');label.textContent=escapeText(host.name)+' · '+escapeText(host.voice_label)+' (voz escolhida)';
+     row.append(avatar,label);hosts.append(row);
+   }
+   pilot.textContent=escapeText(data.pilot_title)+' · alvo '+escapeText(data.target_duration_seconds)+' segundos · '+escapeText(data.estimated_characters)+' caracteres';
+   dialogue.replaceChildren();
+   for(const turn of data.dialogue||[]){
+     const li=document.createElement('li'),strong=document.createElement('strong');
+     strong.textContent=escapeText(turn.speaker)+': ';
+     li.append(strong,document.createTextNode(escapeText(turn.text)));
+     dialogue.append(li);
+   }
+   document.querySelector('#disclosure').textContent=escapeText(data.disclosure);
+ }catch(err){hosts.textContent=err.message;pilot.textContent='Não disponível';dialogue.replaceChildren();}
+}
+document.querySelector('#refresh').addEventListener('click',refresh);refresh();
+</script>
+</body></html>
