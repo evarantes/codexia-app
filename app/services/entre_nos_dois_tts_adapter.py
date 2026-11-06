@@ -103,15 +103,40 @@ def generate_pilot_audio(
             "model_id": VOICE_MODEL,
         }
         url = f"{ELEVEN_API_ROOT}/text-to-speech/{segment['voice_id']}?output_format={AUDIO_FORMAT}"
-        audio = post_audio(url, payload, api_key)
-        if not _valid_mp3_header(audio):
-            raise SpeechGenerationError(f"Áudio inválido no trecho {segment['index']}; não continuar com novas chamadas pagas")
-        temp = destination.with_suffix(".part")
+
+        # Reserve before a paid request. A timeout may occur AFTER billing:
+        # never retry it automatically, even across process restarts.
+        reservation = destination.with_suffix(".request-pending")
         try:
-            temp.write_bytes(audio)
-            os.replace(temp, destination)
-        finally:
-            temp.unlink(missing_ok=True)
+            fd = os.open(str(reservation), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise SpeechGenerationError(
+                f"Trecho {segment['index']} tem envio anterior não confirmado; "
+                "verifique o histórico do provedor antes de autorizar nova cobrança"
+            ) from None
+        with os.fdopen(fd, "w", encoding="utf-8") as state:
+            state.write("paid_request_reserved\n")
+            state.flush()
+            os.fsync(state.fileno())
+        # A failed/ambiguous request keeps its reservation for manual resolution.
+        try:
+            audio = post_audio(url, payload, api_key)
+            if not _valid_mp3_header(audio):
+                raise SpeechGenerationError(
+                    f"Áudio inválido no trecho {segment['index']}; não continuar com novas chamadas pagas"
+                )
+            temp = destination.with_suffix(".part")
+            try:
+                temp.write_bytes(audio)
+                os.replace(temp, destination)
+            finally:
+                temp.unlink(missing_ok=True)
+        except Exception as exc:
+            raise SpeechGenerationError(
+                f"Trecho {segment['index']} com resultado incerto; reserva mantida. "
+                "Consulte o histórico antes de qualquer reenvio pago."
+            ) from None
+        reservation.unlink(missing_ok=True)
         completed.append({"index": segment["index"], "speaker": segment["speaker"], "path": str(destination), "reused": False})
 
     return {
