@@ -23,6 +23,11 @@ class StudioOverviewTests(unittest.TestCase):
         self.assertIn('Depends(get_current_admin_user)', self.source)
         self.assertFalse(any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr in {'post','delete'} for dec in decorators))
 
+    def test_dashboard_links_to_studio(self):
+        dashboard = Path("app/static/index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/studio/entre-nos-dois/painel"', dashboard)
+        self.assertIn('Entre Nós Dois', dashboard)
+
     def test_direct_studio_page_does_not_expose_protected_data(self):
         page = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "studio_page")
         source = ast.get_source_segment(self.source, page)
