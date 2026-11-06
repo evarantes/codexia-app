@@ -38,9 +38,9 @@ class StudioOnlyStagingTests(unittest.TestCase):
             self.assertIn(term, self.source)
 
     def test_compose_launches_only_studio_after_isolated_migrations(self):
-        self.assertIn("uvicorn app.studio_staging:app", self.compose)
         self.assertIn("dockerfile: Dockerfile.studio-staging", self.compose)
         dockerfile = Path("Dockerfile.studio-staging").read_text(encoding="utf-8")
+        self.assertIn("uvicorn app.studio_staging:app", dockerfile)
         self.assertIn("python scripts/entre_nos_dois_staging_schema.py", dockerfile)
         self.assertNotIn("playwright install", dockerfile)
         self.assertNotIn("apt-get", dockerfile.lower())
