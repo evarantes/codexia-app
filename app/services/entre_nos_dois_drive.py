@@ -10,10 +10,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from app.services.google_drive_archive import GoogleDriveArchive
-from app.services.central_asset_transfer import central_index, register
-
-
 class EntreNosDoisDriveError(RuntimeError):
     pass
 
@@ -30,6 +26,8 @@ def store_asset_bytes(*, user_id: int, kind: str, filename: str, body: bytes, me
         raise EntreNosDoisDriveError("Arquivo vazio ou inválido.")
     task = task_for_user(user_id)
     try:
+        from app.services.google_drive_archive import GoogleDriveArchive
+        from app.services.central_asset_transfer import central_index, register
         with tempfile.TemporaryDirectory(prefix="codexia-entre-nos-dois-") as tmp:
             path = Path(tmp) / filename
             path.write_bytes(body)
@@ -59,6 +57,7 @@ def store_asset_bytes(*, user_id: int, kind: str, filename: str, body: bytes, me
 def find_asset(*, user_id: int, kind: str, filename: str) -> dict | None:
     task = task_for_user(user_id)
     try:
+        from app.services.central_asset_transfer import central_index
         return next(
             (item for item in central_index(task, verify=False)
              if item.get("kind") == kind and item.get("filename") == filename and item.get("drive_file_id")),
@@ -82,6 +81,7 @@ def stream_asset(entry: dict, *, media_type: str, range_header: str = "", head: 
 
 def drive_storage_health(*, user_id: int | None = None) -> dict:
     try:
+        from app.services.google_drive_archive import GoogleDriveArchive
         task = task_for_user(user_id) if user_id is not None else "entre-nos-dois-health"
         archive = GoogleDriveArchive.for_task(task, user_id=user_id)
         ready = archive.is_configured()
