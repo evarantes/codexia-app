@@ -17,6 +17,13 @@ class PrivatePilotAudioTests(unittest.TestCase):
         env = patch.dict(os.environ, {"CODEXIA_STUDIO_PRIVATE_DIR": folder.name})
         env.start()
         self.addCleanup(env.stop)
+        self.assets = {}
+        def save_asset(*, user_id, kind, filename, body, metadata=None):
+            self.assets[(user_id, kind, filename)] = {"kind": kind, "filename": filename, "sha256": "test", "size": len(body), **(metadata or {})}
+        self.save_patch = patch("app.services.entre_nos_dois_audio_review.store_asset_bytes", side_effect=save_asset)
+        self.find_patch = patch("app.services.entre_nos_dois_audio_review.find_asset", side_effect=lambda *, user_id, kind, filename: self.assets.get((user_id, kind, filename)))
+        self.save_patch.start(); self.find_patch.start()
+        self.addCleanup(self.save_patch.stop); self.addCleanup(self.find_patch.stop)
 
     def test_segment_is_private_and_isolated_by_user(self):
         with patch("app.services.entre_nos_dois_audio_review._duration_seconds", return_value=2.5):
@@ -24,8 +31,9 @@ class PrivatePilotAudioTests(unittest.TestCase):
             self.assertEqual(result["speaker"], "Helena")
             self.assertTrue(result["private"])
             self.assertFalse(result["auto_publish"])
-            self.assertTrue(audio_file(user_id=42, index=1).is_file())
-            self.assertFalse(audio_file(user_id=43, index=1).exists())
+            self.assertFalse(audio_file(user_id=42, index=1).is_file())
+            self.assertIn((42, "audio", "segment-01.mp3"), self.assets)
+            self.assertNotIn((43, "audio", "segment-01.mp3"), self.assets)
             self.assertTrue(list_segment_audio(user_id=42)["segments"][0]["uploaded"])
             self.assertFalse(list_segment_audio(user_id=43)["segments"][0]["uploaded"])
 
@@ -66,9 +74,9 @@ class PrivatePilotAudioTests(unittest.TestCase):
         with self.assertRaises(StudioAudioError):
             store_segment_audio(user_id=42, index=1, body=b"x" * (10 * 1024 * 1024 + 1))
 
-    def test_no_directory_is_fail_closed(self):
-        with patch.dict(os.environ, {}, clear=True), patch(
-            "app.services.entre_nos_dois_audio_review._duration_seconds", return_value=2.5,
+    def test_drive_failure_is_fail_closed(self):
+        with patch("app.services.entre_nos_dois_audio_review._duration_seconds", return_value=2.5), patch(
+            "app.services.entre_nos_dois_audio_review.store_asset_bytes", side_effect=RuntimeError("Drive unavailable"),
         ):
             with self.assertRaises(StudioAudioError):
                 store_segment_audio(user_id=42, index=1, body=b"example")
