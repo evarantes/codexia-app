@@ -28,9 +28,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install minimal import dependency
-        run: python -m pip install --quiet "SQLAlchemy>=2.0,<3.0"
+        run: python -m pip install --quiet "SQLAlchemy>=2.0,<3.0" "Pillow>=10,<13"
       - name: Compile standalone voice modules
-        run: python -m compileall -q app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py
+        run: python -m compileall -q app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py app/services/entre_nos_dois_references.py
       - name: Test only isolated program contracts
         run: |
           python -m unittest -v \
@@ -46,4 +46,5 @@ jobs:
             tests.test_entre_nos_dois_sync3_queue \
             tests.test_entre_nos_dois_sync3_result \
             tests.test_entre_nos_dois_studio_api \
-            tests.test_entre_nos_dois_readiness
+            tests.test_entre_nos_dois_readiness \
+            tests.test_entre_nos_dois_references
