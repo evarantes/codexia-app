@@ -12,15 +12,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
-from app.services.entre_nos_dois_references import StudioReferenceError
+from app.services.entre_nos_dois_references import StudioReferenceError, _storage_root
 from app.services.entre_nos_dois_audio_review import (
-    StudioAudioError, audio_file, store_segment_audio, _segment,
+    StudioAudioError, store_segment_audio, _segment,
 )
 from app.services.entre_nos_dois_cost_worksheet import worksheet, CostWorksheetError
 from app.services.entre_nos_dois_tts_adapter import (
     ELEVEN_API_ROOT, VOICE_MODEL, AUDIO_FORMAT, _post_elevenlabs,
 )
 from app.services.entre_nos_dois_voice_preflight import check_approved_voices
+from app.services.entre_nos_dois_drive import asset_present, EntreNosDoisDriveError
 
 
 class PaidPilotTtsError(RuntimeError):
@@ -70,11 +71,12 @@ def submit_one_turn(
         raise PaidPilotTtsError("Limite monetário insuficiente ou superior ao teto do servidor.")
 
     try:
-        destination = audio_file(user_id=user_id, index=index)
-    except (StudioAudioError, StudioReferenceError, OSError) as exc:
-        raise PaidPilotTtsError("Armazenamento privado indisponível.") from None
-    if destination.exists():
-        raise PaidPilotTtsError("Já existe áudio nesta fala; revisão antes de qualquer nova cobrança.")
+        if asset_present(user_id=user_id, kind="audio", filename=f"segment-{index:02d}.mp3"):
+            raise PaidPilotTtsError("Já existe áudio nesta fala; revisão antes de qualquer nova cobrança.")
+    except PaidPilotTtsError:
+        raise
+    except Exception:
+        raise PaidPilotTtsError("Google Drive indisponível; nenhuma geração paga foi enviada.") from None
 
     # The free preflight takes place before reserving a potentially billable POST.
     try:
@@ -89,8 +91,11 @@ def submit_one_turn(
     except Exception:
         raise PaidPilotTtsError("Pré-verificação de vozes falhou; nenhuma geração paga enviada.") from None
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    reservation = destination.with_suffix(".paid-request-pending")
+    try:
+        reservation = _storage_root() / f"user-{user_id}" / "entre-nos-dois" / "metadata" / f"segment-{index:02d}.paid-request-pending.json"
+        reservation.parent.mkdir(parents=True, exist_ok=True)
+    except (StudioReferenceError, OSError):
+        raise PaidPilotTtsError("Armazenamento de metadados indisponível; nenhuma geração paga foi enviada.") from None
     try:
         fd = os.open(str(reservation), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
