@@ -105,7 +105,7 @@ jobs:
           docker compose -f docker-compose.entre-nos-dois-staging.yml exec -T studio-api python -c "from scripts.entre_nos_dois_staging_admin import bootstrap_admin; bootstrap_admin('ci-studio@example.test','ci-initial-staging-passphrase-123')"
       - name: Ensure local FFmpeg for test-only silent MP3 fixture
         run: command -v ffmpeg || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg)
-      - name: Verify actual login, forced rotation and private image upload
+      - name: Verify login, rotation and Drive fail-closed behavior
         run: |
           python scripts/entre_nos_dois_staging_http_e2e.py --base-url http://127.0.0.1:18080 --email ci-studio@example.test --initial-password ci-initial-staging-passphrase-123 --new-password ci-renewed-staging-passphrase-456
       - name: Collect startup logs on failure
