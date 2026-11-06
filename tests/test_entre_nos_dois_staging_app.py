@@ -39,7 +39,11 @@ class StudioOnlyStagingTests(unittest.TestCase):
 
     def test_compose_launches_only_studio_after_isolated_migrations(self):
         self.assertIn("uvicorn app.studio_staging:app", self.compose)
-        self.assertIn("python scripts/apply_migrations.py &&", self.compose)
+        self.assertIn("dockerfile: Dockerfile.studio-staging", self.compose)
+        dockerfile = Path("Dockerfile.studio-staging").read_text(encoding="utf-8")
+        self.assertIn("python scripts/entre_nos_dois_staging_schema.py", dockerfile)
+        self.assertNotIn("playwright install", dockerfile)
+        self.assertNotIn("ffmpeg", dockerfile.lower())
         self.assertNotIn("uvicorn app.main:app", self.compose)
 
     def test_login_is_only_for_active_admin_and_expires(self):
