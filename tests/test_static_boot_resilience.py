@@ -18,7 +18,10 @@ VUE_PAGES = (
 STANDALONE_PAGES = (
     STATIC / "pilot-monitor.html",
 )
-BOOT_PAGES = VUE_PAGES + STANDALONE_PAGES
+STANDALONE_STUDIO_PAGES = (
+    STATIC / "pages" / "entre-nos-dois" / "index.html",
+)
+BOOT_PAGES = VUE_PAGES + STANDALONE_PAGES + STANDALONE_STUDIO_PAGES
 AUTH_PAGES = {
     STATIC / "login.html",
     STATIC / "reset-password.html",
@@ -98,6 +101,17 @@ class StaticBootResilienceTests(unittest.TestCase):
                 self.assertNotIn('rel="stylesheet"', html)
                 self.assertIn("/youtube/cinematic/scene/poll", html)
                 self.assertIn("access_token", html)
+
+    def test_studio_standalone_boot_contract(self):
+        for page in STANDALONE_STUDIO_PAGES:
+            html = page.read_text(encoding="utf-8")
+            self.assertIn("<style>", html)
+            self.assertIn("<script>", html)
+            self.assertIn("/studio/entre-nos-dois/overview", html)
+            self.assertIn("credentials:'same-origin'", html)
+            self.assertNotIn("https://cdn.tailwindcss.com", html)
+            self.assertNotIn("unpkg.com/vue", html)
+            self.assertNotIn('rel="stylesheet"', html)
 
     def test_external_visual_assets_have_safe_boot_contract(self):
         for page in VUE_PAGES:
