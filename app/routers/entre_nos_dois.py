@@ -5,9 +5,16 @@ a provedores. Exigem sessão administrativa autenticada.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import os
+from types import SimpleNamespace
 
-from app.models import User
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models import User, Settings
+from app.services.provider_config import resolve_secret, normalize_secret
+from app.services.entre_nos_dois_readiness import summarize_readiness
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
@@ -45,3 +52,24 @@ def overview(current_user: User = Depends(get_current_admin_user)):
         "requires_human_cost_approval": True,
         "auto_publish": False,
     }
+
+@router.get("/readiness")
+def readiness(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Only tells the administrator whether configuration exists; no secrets or paid calls."""
+    settings = (
+        db.query(Settings)
+        .filter(Settings.user_id == current_user.id)
+        .order_by(Settings.id.desc())
+        .first()
+    )
+    # Do not consult another user's global Settings when no user-specific row exists.
+    own_settings = settings if settings is not None else SimpleNamespace()
+    elevenlabs = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
+    fal_configured = bool(normalize_secret(os.getenv("FAL_KEY")))
+    return summarize_readiness(
+        elevenlabs_configured=bool(elevenlabs["configured"]),
+        fal_configured=fal_configured,
+    )
