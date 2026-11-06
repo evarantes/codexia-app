@@ -62,12 +62,16 @@ ou publicação. Nunca reutilize um token de administrador em logs públicos.
 A homologação usa `app.studio_staging:app`, um aplicativo FastAPI limitado
 às rotas do Studio, login administrativo e saúde. **Não** inicia o painel
 principal, monitor de produção, recuperações de filas, workers ou publicação.
-O comando aplica migrações somente no PostgreSQL isolado antes de iniciar
-o serviço; se falharem, a API não inicia.
+O Dockerfile reduzido cria e valida somente as tabelas necessárias ao Studio
+(`tenants`, `users` e `settings`) no PostgreSQL isolado. Se a verificação
+do esquema falhar, a API não inicia. Isso não substitui as migrações Alembic
+do Codexia principal e não deve ser usado contra bancos de produção.
 
 O arquivo `docker-compose.entre-nos-dois-staging.yml` foi adicionado
 como **opção de homologação independente**, com PostgreSQL e armazenamento
-de imagens exclusivos e Redis próprio. Não usa volumes do Codexia de produção.
+de imagens exclusivos. Não usa Redis, módulos de renderização, Chromium nem
+volumes do Codexia de produção. A imagem `Dockerfile.studio-staging` evita
+a instalação completa da fábrica de vídeos.
 A porta da API fica acessível somente por `127.0.0.1:18080` no host.
 
 Em um ambiente que tenha Docker Compose e o checkout da branch do PR:
@@ -83,11 +87,11 @@ python scripts/entre_nos_dois_smoke.py --base-url http://127.0.0.1:18080
 
 **Não execute literalmente os placeholders acima:** use valores aleatórios
 fortes diferentes dos de produção; não copie credenciais de produção. A construção
-da imagem pode consumir recursos do servidor. Validar RAM, CPU e espaço livre
-antes de iniciar. Não habilitar um domínio público sem TLS e autenticação.
+da imagem, mesmo reduzida, consome recursos do servidor. Validar RAM, CPU e
+especialmente espaço livre antes de iniciar. Não habilitar um domínio público sem TLS e autenticação.
 
 Criar um **administrador próprio de homologação**, sem copiar usuários,
-tokens ou dados da produção. Após confirmar as migrações do banco e que ele
+tokens ou dados da produção. Após confirmar as tabelas isoladas do banco e que ele
 está vazio, executar interativamente **somente no container de homologação**:
 
 ```bash
@@ -131,4 +135,8 @@ docker compose -f docker-compose.entre-nos-dois-staging.yml down
 **Não use `down -v`**, pois isso apaga os volumes isolados de banco e
 imagens desta homologação. Não use este Compose no mesmo projeto Compose
 da instalação de produção nem altere os nomes dos volumes para os de produção.
-Esta configuração é preparatória: **não foi iniciada remotamente por esta PR**.
+O workflow `Entre Nos Dois Voice Tests` também inicia essa imagem e executa
+o smoke HTTP em um runner temporário do GitHub Actions, sem acessar o
+servidor do usuário nem gerar mídia paga. A instalação no Coolify
+continua exigindo autorização de acesso operacional e conferência de
+recursos no servidor. **Não foi iniciada remotamente por esta PR**.
