@@ -1,7 +1,7 @@
-"""API somente leitura do piloto Entre Nós Dois.
+"""API administrativa do piloto Entre Nós Dois.
 
-As rotas não fazem TTS, upload de imagem, geração de vídeo nem chamadas
-a provedores. Exigem sessão administrativa autenticada.
+Oferece prévia editorial e armazenamento privado de imagens e áudios enviados
+pelo administrador. Não faz geração paga, lip-sync ou publicação automática.
 """
 from __future__ import annotations
 
@@ -21,6 +21,9 @@ from app.services.entre_nos_dois_references import (
     StudioReferenceError, host_reference_status, reference_file, store_host_reference, private_storage_health,
 )
 from app.services.entre_nos_dois_voice_check import run_voice_check
+from app.services.entre_nos_dois_audio_review import (
+    MAX_AUDIO_BYTES, StudioAudioError, audio_file, list_segment_audio, store_segment_audio,
+)
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
@@ -164,3 +167,59 @@ def get_reference_image(host: str, current_user: User = Depends(get_current_admi
         str(path), media_type="image/png",
         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
     )
+
+
+@router.get("/audio")
+def pilot_audio_status(current_user: User = Depends(get_current_admin_user)):
+    """Metadata only. Never expose disk paths to the browser."""
+    try:
+        return list_segment_audio(user_id=current_user.id)
+    except (StudioAudioError, OSError) as exc:
+        raise HTTPException(status_code=503, detail="Armazenamento privado de áudio indisponível.") from None
+
+
+@router.put("/audio/{index}")
+async def upload_pilot_audio(
+    index: int,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Admin-controlled MP3 import; no provider calls and no paid work."""
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() not in {
+        "audio/mpeg", "audio/mp3", "application/octet-stream",
+    }:
+        raise HTTPException(status_code=415, detail="Envie um arquivo MP3.")
+    length = request.headers.get("content-length")
+    if length:
+        try:
+            if int(length) > MAX_AUDIO_BYTES:
+                raise HTTPException(status_code=413, detail="MP3 acima de 10 MB.")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Tamanho inválido.") from None
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > MAX_AUDIO_BYTES:
+            raise HTTPException(status_code=413, detail="MP3 acima de 10 MB.")
+    try:
+        return store_segment_audio(user_id=current_user.id, index=index, body=bytes(data))
+    except StudioAudioError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except (StudioReferenceError, OSError):
+        raise HTTPException(status_code=503, detail="Armazenamento privado indisponível.") from None
+
+
+@router.get("/audio/{index}/file")
+def play_pilot_audio(index: int, current_user: User = Depends(get_current_admin_user)):
+    """Protected stream for listening, never a publicly mounted MP3."""
+    try:
+        path = audio_file(user_id=current_user.id, index=index)
+    except StudioAudioError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except StudioReferenceError:
+        raise HTTPException(status_code=503, detail="Armazenamento privado indisponível.") from None
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Trecho de áudio ainda não cadastrado.")
+    return FileResponse(str(path), media_type="audio/mpeg", headers={
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+    })
