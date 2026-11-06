@@ -1,9 +1,10 @@
 # Entre Nós Dois — ativação operacional controlada (Coolify)
 
-**Objetivo:** colocar o Studio administrativo em uma instância separada, sem
+**Objetivo:** homologar a aba Entre Nós Dois em um ambiente isolado, sem
 interromper, atualizar ou acessar o banco, os volumes ou os workers do Codexia
-de produção. Este documento é para uma implantação de *homologação*, não a
-publicação do primeiro episódio.
+de produção. A separação aqui é somente operacional para testes; o módulo final
+continua sendo uma aba dentro do Codexia, não um produto separado. Este documento
+não cobre a publicação do primeiro episódio.
 
 ## 1. Segurança e recursos — antes de clicar em Deploy
 
@@ -14,8 +15,10 @@ publicação do primeiro episódio.
   da imagem Docker também pode consumir recursos e espaço extra.
 - Confirmar que há backup consistente e testado da produção. Não encerrar
   backups em andamento nem reutilizar volumes para acelerar a instalação.
-- Criar **novo projeto de homologação** no Coolify, distinto do projeto
-  principal. Não selecionar a aplicação existente para redeploy.
+- Criar uma aplicação/ambiente **isolado de homologação** no Coolify para
+  validar este branch. Não selecionar a aplicação de produção para redeploy.
+  Essa instância temporária não altera o desenho do produto: Entre Nós Dois
+  permanece uma aba dentro da aplicação principal Codexia.
 - Configurar origem Git privada `evarantes/codexia-app`,
   branch `feature/entre-nos-dois-personagens-mvp`, e arquivo
   `docker-compose.entre-nos-dois-staging.yml` como Docker Compose.
@@ -52,17 +55,20 @@ publicação do primeiro episódio.
    Não abrir a porta 18080 na Internet para simplificar.
 8. Fazer login com o administrador de homologação e trocar imediatamente
    a senha temporária por uma senha nova de 16–72 caracteres.
-9. Verificar que as APIs retornam 401/403 sem login. Carregar uma imagem
-   de teste, reiniciar **só** o container `studio-api` e confirmar que
-   ela persiste no volume `studio_private`. Não usar ainda os
-   retratos oficiais se o domínio/acesso não estiver protegido.
+9. Verificar que as APIs retornam 401/403 sem login. Como o Compose de
+   homologação não contém credenciais do Google Drive, confirmar que o painel
+   informa armazenamento pendente e que o upload de mídia é recusado com
+   segurança. Não guardar retratos ou MP3s no volume local e não usar os
+   retratos oficiais nesse ambiente sem Drive conectado.
 
 ## 3. Critérios de conclusão da implantação
 
 - Acesso administrativo funciona em HTTPS protegido ou túnel.
 - Primeiro login obriga troca de senha; acesso anônimo às imagens e MP3
   é recusado.
-- Banco e ativos persistem após reinício do Studio.
+- Banco e metadados de segurança persistem após reinício. Imagens e áudios são
+  armazenados no Google Drive, em pasta própria do usuário/projeto; o volume
+  local não mantém cópias de mídia após o upload confirmado.
 - O painel abre e mostra andamento dos quatro áudios, personagens,
   storyboard de reprodução e pendências de preparação das cenas.
 - O sistema não recebeu nenhuma chave de IA paga e não disponibiliza
