@@ -51,7 +51,9 @@ def _saved_music_drive_response(item: SavedMusic, kind: str, filename: str, medi
             return None
         response = GoogleDriveArchive.for_asset(entry).stream_response(entry, media_type=media_type)
         if download_name:
-            response.headers["Content-Disposition"] = f'attachment; filename="{download_name}"'
+            safe_download_name = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(download_name))[:100]
+            if safe_download_name:
+                response.headers["Content-Disposition"] = f'attachment; filename="{safe_download_name}"'
         return response
     except Exception:
         return None
@@ -1036,14 +1038,14 @@ def download_saved_music_wav(item_id: int, user: User = Depends(get_current_user
     if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Sem permissão para baixar este item.")
 
+    archived_name = _safe_basename(item.hq_wav_filename or item.hq_wav_url)
+    archived = _saved_music_drive_response(
+        item, "audio", archived_name, "audio/wav", download_name=f"{_sanitize_title(item.title) or 'musica'}.wav"
+    )
+    if archived:
+        return archived
     path = _ensure_hq_wav_for_item(db, item)
     if not path or not os.path.isfile(path):
-        archived_name = _safe_basename(item.hq_wav_filename or item.hq_wav_url)
-        archived = _saved_music_drive_response(
-            item, "audio", archived_name, "audio/wav", download_name=f"{_sanitize_title(item.title) or 'musica'}.wav"
-        )
-        if archived:
-            return archived
         raise HTTPException(status_code=503, detail="Não foi possível gerar ou recuperar o WAV agora.")
     try:
         db.commit()
@@ -1065,14 +1067,14 @@ def download_saved_music_cover(item_id: int, user: User = Depends(get_current_us
     if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Sem permissão para baixar este item.")
 
+    archived_name = _safe_basename(item.cover_filename or item.cover_url)
+    archived = _saved_music_drive_response(
+        item, "image", archived_name, "image/png", download_name=f"{_sanitize_title(item.title) or 'capa'}_3000x3000.png"
+    )
+    if archived:
+        return archived
     path = _ensure_cover_for_item(db, item)
     if not path or not os.path.isfile(path):
-        archived_name = _safe_basename(item.cover_filename or item.cover_url)
-        archived = _saved_music_drive_response(
-            item, "image", archived_name, "image/png", download_name=f"{_sanitize_title(item.title) or 'capa'}_3000x3000.png"
-        )
-        if archived:
-            return archived
         raise HTTPException(status_code=503, detail="Não foi possível gerar ou recuperar a capa agora.")
     try:
         db.commit()
