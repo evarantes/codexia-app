@@ -1770,7 +1770,10 @@ def _run_migration(
         payload["stage_phase"] = "cleaning_main"
         _write_job(job_id, payload)
         cleanup_inodes = inodes
-        if staged_mode:
+        initial_archive_sweep = bool(
+            staged_mode and not payload.get("verified_archive_cleanup_sweep_done")
+        )
+        if staged_mode and not initial_archive_sweep:
             selected_owners = set(selected_task_ids)
             cleanup_inodes = {
                 inode_key: group
@@ -1778,6 +1781,22 @@ def _run_migration(
                 if selected_owners.intersection(group.get("owners") or {})
             }
         bytes_freed = _remove_fully_archived_aliases(projects, cleanup_inodes)
+        if initial_archive_sweep:
+            payload["verified_archive_cleanup_sweep_done"] = True
+            cutoff = time.time() - 24 * 60 * 60
+            worker_task_ids = [
+                str(project.get("task_id") or "")
+                for project in projects.values()
+                if (
+                    str(project.get("task_id") or "")
+                    and not str(project.get("task_id") or "").startswith("music-")
+                    and str(project.get("status") or "").strip().lower() in _ARCHIVABLE_STATUSES
+                    and float(project.get("updated_at") or 0.0) <= cutoff
+                )
+            ]
+            payload["worker_cleanup_task_ids"] = list(dict.fromkeys(
+                list(payload.get("worker_cleanup_task_ids") or []) + worker_task_ids
+            ))
         payload["current_stage_main_cleanup_complete"] = True
         payload["main_cleanup_bytes_freed_this_stage"] = int(bytes_freed)
         payload["stage_phase"] = "cleaning_worker"
@@ -1791,7 +1810,12 @@ def _run_migration(
         payload["worker_cleanup_task_ids"] = list(dict.fromkeys(previous_ids + selected_task_ids))
         worker_cleanup_status = "deferred" if payload["worker_cleanup_task_ids"] else "not_needed"
     else:
-        cleanup_payload = {**payload, "worker_cleanup_task_ids": selected_task_ids}
+        cleanup_payload = {
+            **payload,
+            "worker_cleanup_task_ids": list(dict.fromkeys(
+                list(payload.get("worker_cleanup_task_ids") or []) + selected_task_ids
+            )),
+        }
         worker_cleanup_status = _queue_confirmed_worker_cleanup(job_id, cleanup_payload)
         payload.update({
             key: value for key, value in cleanup_payload.items()
