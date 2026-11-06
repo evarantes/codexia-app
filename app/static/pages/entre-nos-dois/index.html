@@ -29,10 +29,10 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <label>Confirmar nova senha<input id="studio-new-password-confirm" type="password" autocomplete="new-password" minlength="16" maxlength="72" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
 <button type="submit">Trocar senha e abrir Studio</button></form><p id="studio-login-status" class="muted" role="status" aria-live="polite">Autenticação necessária para dados e imagens privados.</p></section>
 <div class="grid">
-<section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais devem ser carregadas em armazenamento privado antes de qualquer animação.</p></section>
+<section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais ficam na pasta privada do Entre Nós Dois no Google Drive antes de qualquer animação.</p></section>
 <section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button> <button id="verify-voices" type="button">Verificar vozes (sem gerar áudio)</button><p id="voice-check-result" class="muted" role="status" aria-live="polite">A disponibilidade real das vozes ainda não foi consultada.</p></section>
 </div>
-<section class="card" style="margin-top:18px"><h2>Imagens oficiais para o teste</h2><p class="muted">Envie uma imagem separada de cada personagem (JPG, PNG ou WebP, até 8 MB). Ficam armazenadas em área privada e não são enviadas a provedores nesta etapa.</p><div class="grid"><div><label for="gabriel-upload">Gabriel</label><input id="gabriel-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-gabriel" type="button">Salvar Gabriel</button><p id="gabriel-status" class="muted">Ainda não verificado.</p><img id="gabriel-preview" alt="Referência privada de Gabriel" style="display:none;width:100%;max-width:220px;border-radius:10px"></div><div><label for="helena-upload">Helena</label><input id="helena-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-helena" type="button">Salvar Helena</button><p id="helena-status" class="muted">Ainda não verificado.</p><img id="helena-preview" alt="Referência privada de Helena" style="display:none;width:100%;max-width:220px;border-radius:10px"></div></div><p id="upload-message" class="muted" role="status"></p></section>
+<section class="card" style="margin-top:18px"><h2>Imagens oficiais para o teste</h2><p class="muted">Envie uma imagem separada de cada personagem (JPG, PNG ou WebP, até 8 MB). São armazenadas na pasta do Entre Nós Dois no Google Drive e não são enviadas a provedores nesta etapa.</p><div class="grid"><div><label for="gabriel-upload">Gabriel</label><input id="gabriel-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-gabriel" type="button">Salvar Gabriel</button><p id="gabriel-status" class="muted">Ainda não verificado.</p><img id="gabriel-preview" alt="Referência privada de Gabriel" style="display:none;width:100%;max-width:220px;border-radius:10px"></div><div><label for="helena-upload">Helena</label><input id="helena-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-helena" type="button">Salvar Helena</button><p id="helena-status" class="muted">Ainda não verificado.</p><img id="helena-preview" alt="Referência privada de Helena" style="display:none;width:100%;max-width:220px;border-radius:10px"></div></div><p id="upload-message" class="muted" role="status"></p></section>
 <section class="card" style="margin-top:18px"><h2>Orçamento da narração — sem cobrança</h2>
 <p class="muted">Esta simulação calcula os caracteres exatos do roteiro. Informe a tarifa em dólares por mil caracteres após consultar o plano ElevenLabs. O valor é apenas estimado: pode não refletir créditos, plano, modelo ou impostos. Nenhuma geração é liberada aqui.</p>
 <label for="tts-cost-rate">Tarifa informada (US$ / 1.000 caracteres)</label>
@@ -50,7 +50,7 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <p id="tts-paid-message" class="muted" role="status"></p></div>
 </section>
 <section class="card" style="margin-top:18px"><h2>Revisão de áudio — quatro falas</h2>
-<p class="muted">Importe MP3s previamente gerados com as vozes escolhidas para ouvir e conferir o diálogo. O Studio não sintetiza voz nem gera custos nesta etapa. Cada arquivo é privado, limitado a 10 MB e 45 segundos; a duração será medida automaticamente.</p>
+<p class="muted">Importe MP3s previamente gerados com as vozes escolhidas para ouvir e conferir o diálogo. O Studio não sintetiza voz nem gera custos nesta etapa. Cada MP3 é guardado na pasta do Entre Nós Dois no Google Drive, limitado a 10 MB e 45 segundos; a duração será medida automaticamente.</p>
 <div id="audio-review"><p class="muted">Faça login para verificar as quatro faixas.</p></div>
 <p><button id="play-audio-sequence" type="button" disabled>Ouvir diálogo completo</button> <button id="stop-audio-sequence" type="button" disabled>Parar reprodução</button></p>
 <p id="audio-timeline-summary" class="muted">A linha do tempo será calculada após importar os quatro MP3s.</p>
@@ -187,7 +187,7 @@ function releaseAudioPreviews(){stopAudioSequence();for(const k of Object.keys(a
 async function refreshAudioReview(){
  const holder=document.getElementById('audio-review');
  const result=await studioFetch('/studio/entre-nos-dois/audio');
- if(!result.ok){holder.textContent='Áudios indisponíveis: verifique o login e o volume privado.';return}
+ if(!result.ok){holder.textContent='Áudios indisponíveis: verifique o login, o Google Drive e o volume de metadados.';return}
  const status=await result.json();
  releaseAudioPreviews();holder.replaceChildren();
  for(const segment of status.segments||[]){
@@ -199,7 +199,7 @@ async function refreshAudioReview(){
    const file=input.files[0],message=document.getElementById('audio-review-message');
    if(!file){message.textContent='Selecione primeiro um MP3.';return}
    if(file.size>10*1024*1024){message.textContent='O arquivo excede 10 MB.';return}
-   button.disabled=true;message.textContent='Conferindo áudio e salvando em área privada...';
+   button.disabled=true;message.textContent='Conferindo áudio e enviando à pasta do Entre Nós Dois no Google Drive...';
    try{
     const saved=await studioFetch('/studio/entre-nos-dois/audio/'+segment.index,{method:'PUT',headers:{'Content-Type':'audio/mpeg'},body:file});
     if(!saved.ok){const details=await saved.json().catch(()=>({}));throw new Error(details.detail||'Falha ao salvar áudio.')}
@@ -319,7 +319,7 @@ function renderPreview(){
 
 async function updateHostImages(){
  const response=await studioFetch('/studio/entre-nos-dois/references');
- if(!response.ok)throw new Error(response.status===503?'Configure o volume privado persistente do Studio no servidor.':'Não foi possível verificar as imagens.');
+ if(!response.ok)throw new Error(response.status===503?'Conecte o Google Drive em Configurações e configure o volume privado de metadados.':'Não foi possível verificar as imagens.');
  const info=await response.json();
  for(const host of ['Gabriel','Helena']){
   const k=host.toLowerCase(),img=document.getElementById(k+'-preview');
@@ -338,11 +338,11 @@ async function saveHostImage(host){
  const msg=document.getElementById('upload-message'),button=document.getElementById('upload-'+k);
  if(!file){msg.textContent='Escolha primeiro uma imagem de '+host+'.';return}
  if(file.size>8*1024*1024){msg.textContent='A imagem não pode ultrapassar 8 MB.';return}
- button.disabled=true;msg.textContent='Salvando imagem privada de '+host+'...';
+ button.disabled=true;msg.textContent='Enviando imagem de '+host+' à pasta do Entre Nós Dois no Google Drive...';
  try{
   const r=await studioFetch('/studio/entre-nos-dois/references/'+host,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:file});
   if(!r.ok){const error=await r.json().catch(()=>({}));throw new Error(typeof error.detail==='string'?error.detail:'Não foi possível salvar a imagem.')}
-  msg.textContent='Imagem de '+host+' cadastrada na área privada.';
+  msg.textContent='Imagem de '+host+' cadastrada no Google Drive.';
   await updateHostImages();
  }catch(err){msg.textContent=err.message}finally{button.disabled=false}
 }
