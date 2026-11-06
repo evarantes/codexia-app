@@ -7,7 +7,7 @@ Uses a standalone PostgreSQL database via APP_ENV=staging.
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from datetime import timedelta
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -48,7 +48,7 @@ async def staging_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return {
-        "access_token": create_access_token_for_user(user),
+        "access_token": create_access_token_for_user(user, expires_delta=timedelta(hours=1)),
         "token_type": "bearer",
         "must_change_password": bool(user.must_change_password),
     }
