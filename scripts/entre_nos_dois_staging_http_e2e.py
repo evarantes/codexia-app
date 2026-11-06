@@ -103,6 +103,13 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     )
     assert code == 403, "Staging must default to no paid TTS even with an approved payload."
 
+    code, body = call(base, "/studio/entre-nos-dois/scene/readiness", token=token)
+    assert code == 200
+    scene_before = json.loads(body)
+    assert scene_before["inputs_ready"] is False
+    assert scene_before["billable_calls_performed"] is False
+    assert call(base, "/studio/entre-nos-dois/scene/readiness")[0] in (401, 403)
+
     # Real 1-second disposable MP3 with no speech or copyrighted content.
     mp3 = subprocess.run(
         ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
@@ -127,6 +134,15 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert 4.0 <= timeline["total_seconds"] <= 6.0
     assert timeline["is_rendered_video"] is False and timeline["auto_publish"] is False
     assert call(base, "/studio/entre-nos-dois/audio/timeline")[0] in (401, 403)
+
+    code, body = call(base, "/studio/entre-nos-dois/scene/readiness?usd_per_second=0.20", token=token)
+    assert code == 200
+    scene_after = json.loads(body)
+    assert scene_after["inputs_ready"] is False  # Gabriel reference not uploaded.
+    assert "reference_gabriel" in scene_after["missing"]
+    assert scene_after["private_media_export_authorized"] is False
+    assert scene_after["signed_asset_urls_created"] is False
+    assert scene_after["billable_calls_performed"] is False
 
     old_login = parse.urlencode({"username": email, "password": initial_password}).encode()
     new_login = parse.urlencode({"username": email, "password": next_password}).encode()
