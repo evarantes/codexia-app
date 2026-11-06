@@ -487,7 +487,7 @@ class GoogleDriveArchive:
     def _task_folder(self, service, root_id: str, task: str) -> str:
         task = _valid_task(task)
         # Studio portraits/audio use one stable user-scoped task key.
-        direct = re.fullmatch(r"entre-nos-dois-user-(\\d+)", task)
+        direct = re.fullmatch(r"entre-nos-dois-user-(\d+)", task)
         if direct:
             user_folder = self._entre_nos_dois_parent(service, root_id, int(direct.group(1)))
             return self._find_or_create_folder(
