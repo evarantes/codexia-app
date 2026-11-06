@@ -8,13 +8,17 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import User, Settings
 from app.services.provider_config import resolve_secret, normalize_secret
 from app.services.entre_nos_dois_readiness import summarize_readiness
+from app.services.entre_nos_dois_references import (
+    StudioReferenceError, host_reference_status, reference_file, store_host_reference,
+)
 from app.services.entre_nos_dois_voice_check import run_voice_check
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
@@ -94,3 +98,51 @@ def verify_voices(
     own_settings = settings if settings is not None else SimpleNamespace()
     resolved = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
     return run_voice_check(provider_settings={"elevenlabs_api_key": resolved})
+
+@router.get("/references")
+def references(current_user: User = Depends(get_current_admin_user)):
+    """User-scoped private portrait presence only."""
+    try:
+        return {"hosts": host_reference_status(user_id=current_user.id)}
+    except StudioReferenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@router.put("/references/{host}")
+async def upload_reference(
+    host: str,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Accept a raw image; validation, normalization and private storage only."""
+    size = request.headers.get("content-length")
+    if size is not None:
+        try:
+            if int(size) > 8 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Imagem excede 8 MB.")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Tamanho inválido.") from None
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Imagem excede 8 MB.")
+    try:
+        return store_host_reference(user_id=current_user.id, host=host, body=bytes(data))
+    except StudioReferenceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/references/{host}/image")
+def get_reference_image(host: str, current_user: User = Depends(get_current_admin_user)):
+    """Private image delivery; never expose filesystem paths or public asset URLs."""
+    try:
+        path = reference_file(user_id=current_user.id, host=host)
+    except StudioReferenceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Imagem ainda não cadastrada.")
+    return FileResponse(
+        str(path), media_type="image/png",
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
