@@ -81,6 +81,15 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert steps["helena_image"] == "configured"
     assert call(base, "/studio/entre-nos-dois/references/Helena/image")[0] in (401, 403)
 
+    code, body = call(base, "/studio/entre-nos-dois/voice-cost-worksheet", token=token)
+    assert code == 200
+    budget = json.loads(body)
+    assert budget["generation_enabled"] is False and budget["billable_calls_performed"] is False
+    assert budget["total_characters"] > 0 and len(budget["manifest_sha256"]) == 64
+    assert call(base, "/studio/entre-nos-dois/voice-cost-worksheet")[0] in (401, 403)
+    code, body = call(base, "/studio/entre-nos-dois/voice-cost-worksheet?usd_per_1000_characters=0.25", token=token)
+    assert code == 200 and json.loads(body)["estimate_only"] is True
+
     # Real 1-second disposable MP3 with no speech or copyrighted content.
     mp3 = subprocess.run(
         ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
@@ -113,7 +122,7 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert call(base, "/token", method="POST", data=new_login,
                 content_type="application/x-www-form-urlencoded")[0] == 200
 
-    return {"staging_e2e": "passed", "checks": 20, "billable_calls": 0, "published": False}
+    return {"staging_e2e": "passed", "checks": 23, "billable_calls": 0, "published": False}
 
 
 if __name__ == "__main__":
