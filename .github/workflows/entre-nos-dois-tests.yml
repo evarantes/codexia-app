@@ -14,6 +14,8 @@ on:
       - "scripts/entre_nos_dois_smoke.py"
       - "scripts/entre_nos_dois_staging_admin.py"
       - "docker-compose.entre-nos-dois-staging.yml"
+      - "Dockerfile.studio-staging"
+      - "scripts/entre_nos_dois_staging_schema.py"
       - ".github/workflows/entre-nos-dois-tests.yml"
   workflow_dispatch:
 
@@ -40,7 +42,7 @@ jobs:
           CODEXIA_STAGING_SECRET_KEY: ci_fake_staging_secret_only
         run: docker compose -f docker-compose.entre-nos-dois-staging.yml config --quiet
       - name: Compile standalone voice modules
-        run: python -m compileall -q app/studio_staging.py scripts/entre_nos_dois_staging_admin.py scripts/entre_nos_dois_smoke.py app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py app/services/entre_nos_dois_references.py
+        run: python -m compileall -q app/studio_staging.py scripts/entre_nos_dois_staging_schema.py scripts/entre_nos_dois_staging_admin.py scripts/entre_nos_dois_smoke.py app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py app/services/entre_nos_dois_references.py
       - name: Test only isolated program contracts
         run: |
           python -m unittest -v \
@@ -62,3 +64,29 @@ jobs:
             tests.test_entre_nos_dois_staging \
             tests.test_entre_nos_dois_staging_admin \
             tests.test_entre_nos_dois_staging_app
+
+  staging-runtime:
+    name: Start isolated Studio HTTP smoke (no billable calls)
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      CODEXIA_STAGING_DB_PASSWORD: ci_staging_password_fake_local_only_123
+      CODEXIA_STAGING_SECRET_KEY: ci_staging_secret_fake_local_only_456
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start temporary minimal Studio + PostgreSQL
+        run: docker compose -f docker-compose.entre-nos-dois-staging.yml up --build -d
+      - name: Confirm HTTP boot and anonymous security boundaries
+        run: |
+          for n in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:18080/health
+          python scripts/entre_nos_dois_smoke.py --base-url http://127.0.0.1:18080
+      - name: Collect startup logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.entre-nos-dois-staging.yml logs --tail=100 studio-api studio-db
+      - name: Clean up disposable containers and volumes
+        if: always()
+        run: docker compose -f docker-compose.entre-nos-dois-staging.yml down --volumes --remove-orphans
