@@ -23,6 +23,14 @@ class StudioOverviewTests(unittest.TestCase):
         self.assertIn('Depends(get_current_admin_user)', self.source)
         self.assertFalse(any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr in {'post','delete'} for dec in decorators))
 
+    def test_direct_studio_page_does_not_expose_protected_data(self):
+        page = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "studio_page")
+        source = ast.get_source_segment(self.source, page)
+        self.assertIn('FileResponse(', source)
+        self.assertIn('index.html', source)
+        self.assertNotIn('api_key', source)
+        self.assertNotIn('run_voice_check(', source)
+
     def test_voice_check_admin_only_and_no_tts_action(self):
         voice_check = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "verify_voices")
         source = ast.get_source_segment(self.source, voice_check)
