@@ -33,3 +33,26 @@ Não há autorização para chamadas pagas ou publicação automática.
 ## Recuperação segura de falhas
 
 Em falhas incertas após chamadas pagas, **não repetir automaticamente** uma solicitação. Verificar no painel do fornecedor se a geração já ocorreu. Preservar os registros de reserva no armazenamento persistente e fazer conciliação manual antes de qualquer reenvio. Não usar diretório temporário da imagem Docker para armazenar recibos ou mídias originais.
+
+## Smoke HTTP de homologação (sem créditos)
+
+Depois de iniciar uma **instância de homologação** com o volume persistente,
+execute, a partir de uma máquina com acesso ao serviço:
+
+```bash
+python scripts/entre_nos_dois_smoke.py --base-url https://URL-DA-HOMOLOGACAO
+```
+
+Esse primeiro comando apenas confirma a página HTML e que as APIs privadas
+recusam acessos anônimos. Para verificar as respostas administrativas,
+defina `CODEXIA_STUDIO_SMOKE_TOKEN` na variável de ambiente local (não no
+repositório e não na linha de comando) e execute:
+
+```bash
+python scripts/entre_nos_dois_smoke.py --base-url https://URL-DA-HOMOLOGACAO --admin-checks
+```
+
+O resultado é JSON com `all_passed` e cada verificação; um erro retorna código
+de saída diferente de zero. **Não verifica persistência após restart**, que
+deve ser testada manualmente no Coolify; tampouco faz upload, TTS, animação
+ou publicação. Nunca reutilize um token de administrador em logs públicos.
