@@ -24,7 +24,7 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button> <button id="verify-voices" type="button">Verificar vozes (sem gerar áudio)</button><p id="voice-check-result" class="muted" role="status" aria-live="polite">A disponibilidade real das vozes ainda não foi consultada.</p></section>
 </div>
 <section class="card" style="margin-top:18px"><h2>Imagens oficiais para o teste</h2><p class="muted">Envie uma imagem separada de cada personagem (JPG, PNG ou WebP, até 8 MB). Ficam armazenadas em área privada e não são enviadas a provedores nesta etapa.</p><div class="grid"><div><label for="gabriel-upload">Gabriel</label><input id="gabriel-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-gabriel" type="button">Salvar Gabriel</button><p id="gabriel-status" class="muted">Ainda não verificado.</p><img id="gabriel-preview" alt="Referência privada de Gabriel" style="display:none;width:100%;max-width:220px;border-radius:10px"></div><div><label for="helena-upload">Helena</label><input id="helena-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-helena" type="button">Salvar Helena</button><p id="helena-status" class="muted">Ainda não verificado.</p><img id="helena-preview" alt="Referência privada de Helena" style="display:none;width:100%;max-width:220px;border-radius:10px"></div></div><p id="upload-message" class="muted" role="status"></p></section>
-<section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div></section>
+<section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div><p id="next-action" class="notice" role="status" aria-live="polite">Verificando próximo passo...</p></section>
 <section class="card" style="margin-top:18px"><h2>Diálogo do teste</h2><ol id="dialogue"><li class="muted">Carregando roteiro...</li></ol><p class="muted" id="disclosure"></p></section>
 <footer>O piloto usa vozes e personagens virtuais. A duração só poderá ser confirmada após a geração e medição dos áudios.</footer>
 </main>
@@ -93,6 +93,7 @@ async function refresh(){
    const statusResp=await studioFetch(readinessEndpoint);
    if(!statusResp.ok){throw new Error('Não foi possível consultar as integrações.');}
    const snapshot=await statusResp.json();
+   document.querySelector("#next-action").textContent="Próximo passo: "+escapeText(snapshot.next_action||"Concluir as verificações");
    for(const step of snapshot.steps||[]){
      const p=document.createElement('p');
      const indicator=document.createElement('strong');
