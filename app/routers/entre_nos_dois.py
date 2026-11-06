@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, Settings
+from app.models import User, Settings, UnifiedVideo
 from app.services.provider_config import resolve_secret, normalize_secret
 from app.services.entre_nos_dois_readiness import summarize_readiness
 from app.services.entre_nos_dois_cost_worksheet import worksheet, CostWorksheetError
@@ -41,6 +41,47 @@ def studio_page():
     path = Path(__file__).resolve().parents[1] / "static" / "pages" / "entre-nos-dois" / "index.html"
     return FileResponse(str(path), media_type="text/html", headers={"Cache-Control": "no-store"})
 
+
+
+@router.get("/videos")
+def project_videos(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Private project list; only videos explicitly created by this module appear."""
+    rows = (
+        db.query(UnifiedVideo)
+        .filter(
+            UnifiedVideo.user_id == current_user.id,
+            UnifiedVideo.source_module == "entre_nos_dois",
+        )
+        .order_by(UnifiedVideo.created_at.desc(), UnifiedVideo.id.desc())
+        .limit(100)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "title": row.topic or "Episódio sem título",
+                "content_type": row.content_type,
+                "status": row.status,
+                "progress": int(row.progress or 0),
+                "current_step": row.current_step,
+                "message": row.last_message,
+                "error": row.last_error,
+                "has_video": bool(row.video_url or row.video_path),
+                "youtube_url": row.youtube_url,
+                "published_at": row.published_at.isoformat() if row.published_at else None,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "auto_publish": False,
+            }
+            for row in rows
+        ],
+        "count": len(rows),
+        "limit": 100,
+        "auto_publish": False,
+    }
 
 
 @router.get("/overview")
