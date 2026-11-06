@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Real HTTP staging acceptance: login -> forced password rotation -> portrait upload.
+"""Real HTTP staging acceptance: login, password rotation and Drive fail-closed behavior.
 
-Uses only disposable test credentials and a generated 1x1 PNG. No paid services.
+Uses disposable test credentials. Media uploads run only when a Drive account is
+configured; otherwise staging verifies uploads are rejected safely. No paid calls.
 Never run against production, real accounts or real portraits.
 """
 from __future__ import annotations
@@ -77,9 +78,24 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     code, body = call(base, "/studio/entre-nos-dois/readiness", token=token)
     assert code == 200
     steps = {x["key"]: x["status"] for x in json.loads(body)["steps"]}
-    assert steps["private_storage"] == "configured"
-    assert steps["helena_image"] == "configured"
     assert call(base, "/studio/entre-nos-dois/references/Helena/image")[0] in (401, 403)
+    if steps["private_storage"] != "configured":
+        # CI has no real Drive account. Prove that storage is required and the
+        # admin upload fails closed instead of retaining media on the app disk.
+        assert steps["private_storage"] == "missing"
+        code, _ = call(base, "/studio/entre-nos-dois/references/Helena", method="PUT",
+                       token=token, data=pixel_png(), content_type="application/octet-stream")
+        assert code in (400, 503)
+        code, body = call(base, "/studio/entre-nos-dois/scene/readiness", token=token)
+        assert code == 200 and json.loads(body)["inputs_ready"] is False
+        old_login = parse.urlencode({"username": email, "password": initial_password}).encode()
+        new_login = parse.urlencode({"username": email, "password": next_password}).encode()
+        assert call(base, "/token", method="POST", data=old_login,
+                    content_type="application/x-www-form-urlencoded")[0] == 401
+        assert call(base, "/token", method="POST", data=new_login,
+                    content_type="application/x-www-form-urlencoded")[0] == 200
+        return {"staging_e2e": "passed", "media_storage": "blocked_without_drive", "billable_calls": 0, "published": False}
+    assert steps["helena_image"] == "configured"
 
     code, body = call(base, "/studio/entre-nos-dois/voice-cost-worksheet", token=token)
     assert code == 200
