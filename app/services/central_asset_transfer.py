@@ -8,6 +8,7 @@ import re
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -572,18 +573,46 @@ class CentralAssetTransfer:
         if not self.enabled:
             return
         from app.services.production_manifest import load_manifest, manifest_dir
+
+        pending = []
         for entry in load_manifest(task).get('artifacts') or []:
             p = Path(entry.get('durable_path') or entry.get('original_path') or '')
-            if (entry.get('kind') in EXTENSIONS
-                    and (include_video or entry.get('kind') != 'video')
+            kind = entry.get('kind')
+            if (kind in EXTENSIONS
+                    and (include_video or kind != 'video')
                     and p.is_file()):
-                self.publish(task, p, entry['kind'], Path(entry.get('original_path') or p).name)
+                filename = Path(entry.get('original_path') or p).name
+                pending.append((p, kind, filename))
         script = manifest_dir(task) / 'script.json'
         if script.is_file():
             # Distinct task filename prevents scripts from overwriting each other.
             named = script.with_name(f'{task_key(task)}-{digest(script)[:16]}-script.json')
             named.write_bytes(script.read_bytes())
-            self.publish(task, named, 'script')
+            pending.append((named, 'script', named.name))
+        if not pending:
+            return
+
+        # The production checkpoint path also archives files for new projects.
+        # Upload independent assets concurrently with isolated HTTP sessions,
+        # while sharing the already fetched index snapshot between workers.
+        try:
+            remote_index = self._remote_index(task)
+        except Exception:
+            remote_index = None
+        thread_context = threading.local()
+
+        def publish_one(item):
+            p, kind, filename = item
+            transfer = getattr(thread_context, 'transfer', None)
+            if transfer is None:
+                transfer = CentralAssetTransfer()
+                if remote_index is not None:
+                    transfer._remote_index_cache[task_key(task)] = dict(remote_index)
+                thread_context.transfer = transfer
+            return transfer.publish(task, p, kind, filename)
+
+        with ThreadPoolExecutor(max_workers=min(3, len(pending))) as pool:
+            list(pool.map(publish_one, pending))
 
     def _worker_manifest_path_owners(self):
         """Read manifest ownership once for a cleanup batch on the worker."""
