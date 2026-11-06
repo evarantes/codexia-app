@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models import User, Settings
 from app.services.provider_config import resolve_secret, normalize_secret
 from app.services.entre_nos_dois_readiness import summarize_readiness
+from app.services.entre_nos_dois_voice_check import run_voice_check
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
@@ -73,3 +74,23 @@ def readiness(
         elevenlabs_configured=bool(elevenlabs["configured"]),
         fal_configured=fal_configured,
     )
+
+@router.post("/verify-voices")
+def verify_voices(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Admin opt-in: consults only voice metadata (GET) without running paid TTS.
+
+    POST requires an intentional UI action; the provider API request uses GET.
+    Only user-scoped credentials are eligible (no other user's Settings).
+    """
+    settings = (
+        db.query(Settings)
+        .filter(Settings.user_id == current_user.id)
+        .order_by(Settings.id.desc())
+        .first()
+    )
+    own_settings = settings if settings is not None else SimpleNamespace()
+    resolved = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
+    return run_voice_check(provider_settings={"elevenlabs_api_key": resolved})
