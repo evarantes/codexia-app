@@ -476,6 +476,22 @@ class GoogleDriveArchive:
         }, fields="id").execute()
         return str(created["id"])
 
+    def prepare_task_folder(self, task: str) -> str:
+        """Create/find root and task folders before a project starts parallel uploads."""
+        task = _valid_task(task)
+        values = self._settings()
+        try:
+            with _LOCK:
+                service = self.drive_service()
+                root_id = self._get_root_folder(service, values)
+                return self._task_folder(service, root_id, task)
+        except GoogleDriveArchiveError:
+            raise
+        except Exception as exc:
+            raise GoogleDriveArchiveError(
+                "Falha ao preparar a pasta do projeto no Google Drive."
+            ) from exc
+
     def _find_file(self, service, parent_id: str, kind: str, filename: str) -> Optional[Dict[str, Any]]:
         query = (
             f"{_quoted(parent_id)} in parents and name = {_quoted(filename)} "
@@ -638,8 +654,22 @@ class GoogleDriveArchive:
                                              fields="id,name,size,md5Checksum,appProperties")
         try:
             response = None
+            retry_attempt = 0
             while response is None:
-                status, response = request.next_chunk()
+                try:
+                    status, response = request.next_chunk()
+                    retry_attempt = 0
+                except Exception as exc:
+                    http_response = getattr(exc, "resp", None)
+                    http_status = int(getattr(http_response, "status", 0) or 0)
+                    if http_status not in {429, 500, 502, 503, 504} or retry_attempt >= 5:
+                        raise
+                    # Keep the same resumable request and back off on transient
+                    # Drive errors instead of failing a whole project on one
+                    # throttled or temporarily unavailable chunk.
+                    time.sleep(min(2 ** retry_attempt, 16))
+                    retry_attempt += 1
+                    continue
                 if progress_callback and status is not None:
                     try:
                         progress_callback(min(size, max(0, int(status.progress() * size))), size)
