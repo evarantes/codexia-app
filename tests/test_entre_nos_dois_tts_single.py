@@ -82,11 +82,11 @@ class SingleTurnPaidTtsTests(unittest.TestCase):
         def uncertain(*_):
             self.calls.append("paid_attempt")
             raise TimeoutError()
-        with self.assertRaises(PaidPilotTtsError):
+        with patch("app.services.entre_nos_dois_tts_single.asset_present", return_value=False), self.assertRaises(PaidPilotTtsError):
             self._submit(post_audio=uncertain)
         path = __import__("pathlib").Path(os.environ["CODEXIA_STUDIO_PRIVATE_DIR"]) / "user-42" / "entre-nos-dois" / "metadata" / "segment-01.paid-request-pending.json"
         self.assertTrue(path.exists())
-        with self.assertRaises(PaidPilotTtsError):
+        with patch("app.services.entre_nos_dois_tts_single.asset_present", return_value=False), self.assertRaises(PaidPilotTtsError):
             self._submit()
         self.assertEqual(len(self.calls), 1)
 
