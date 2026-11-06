@@ -9,7 +9,7 @@ class StudioReadinessTests(unittest.TestCase):
         states = {item["key"]: item["status"] for item in result["steps"]}
         self.assertEqual(states["elevenlabs_key"], "configured")
         self.assertEqual(states["fal_key"], "configured")
-        self.assertEqual(states["visual_assets"], "not_verified")
+        self.assertEqual(states["visual_assets"], "missing")
         self.assertFalse(result["live_provider_access_confirmed"])
         self.assertFalse(result["paid_execution_enabled"])
         self.assertFalse(result["auto_publish"])
