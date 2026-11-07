@@ -67,6 +67,7 @@ def submit_first_sync3_scene(
     asset_urls: dict[int, dict[str, str]],
     approved_max_usd: float,
     api_key: str,
+    price_usd_per_second: float = 0.1333,
     durable_receipt_dir: str,
     manual_confirmation: bool = False,
     transport: Callable[[str, str, str, dict | None], dict] = _json_request,
@@ -86,6 +87,7 @@ def submit_first_sync3_scene(
         reference_keys=reference_keys,
         asset_urls=asset_urls,
         approved_max_usd=approved_max_usd,
+        price_usd_per_second=price_usd_per_second,
     )
     if prepared["status"] != "ready_for_explicit_submission":
         raise Sync3QueueError("Prévia não aprovada.")
