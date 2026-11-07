@@ -8,6 +8,11 @@ from __future__ import annotations
 import os
 import secrets
 import time
+import base64
+import hashlib
+import hmac
+import json
+import tempfile
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -33,7 +38,7 @@ from app.services.entre_nos_dois_audio_review import (
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
-from app.services.entre_nos_dois_drive import (find_asset, find_video_asset, stream_asset, archive_video_file, EntreNosDoisDriveError)
+from app.services.entre_nos_dois_drive import (find_asset, find_video_asset, stream_asset, archive_video_file, download_asset_to_path, store_asset_bytes, EntreNosDoisDriveError)
 
 router = APIRouter(prefix="/studio/entre-nos-dois", tags=["studio-entre-nos-dois"])
 
@@ -555,3 +560,311 @@ def archive_project_video(
         return {"archived": True, "filename": entry.get("filename"), "size": entry.get("size")}
     except EntreNosDoisDriveError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+class Sync3SceneApproval(BaseModel):
+    usd_per_second: str
+    approved_max_usd: str
+    pricing_verified_in_provider_account: bool = False
+    external_media_consent: bool = False
+    confirmation: str
+
+
+def _sync3_receipt_path(user_id: int) -> Path:
+    from app.services.entre_nos_dois_references import _storage_root
+    return _storage_root() / "projects" / str(int(user_id)) / "entre-nos-dois" / "sync3-scene-01.json"
+
+
+def _read_sync3_receipt(user_id: int) -> dict:
+    path = _sync3_receipt_path(user_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ainda não há envio da primeira cena.")
+    except Exception:
+        raise HTTPException(status_code=503, detail="Recibo da fila não pôde ser lido.") from None
+    if not isinstance(data, dict) or data.get("scene_index") != 1:
+        raise HTTPException(status_code=503, detail="Recibo da primeira cena inválido.")
+    return data
+
+
+def _write_sync3_receipt(user_id: int, data: dict) -> None:
+    path = _sync3_receipt_path(user_id)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _fal_key_for_user(db: Session, user_id: int) -> str:
+    settings = (
+        db.query(Settings).filter(Settings.user_id == user_id)
+        .order_by(Settings.id.desc()).first()
+    )
+    resolved = resolve_secret("fal_api_key", "FAL_KEY", settings or SimpleNamespace())
+    return str(resolved.get("value") or "").strip()
+
+
+def _measured_pilot_inputs(user_id: int, directory: Path) -> tuple[dict, dict]:
+    from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
+    from app.services.entre_nos_dois_timeline import build_measured_timeline
+    from app.services.entre_nos_dois_references import host_reference_status
+    manifest = prepare_speech_manifest()
+    segments = []
+    for item in manifest["segments"]:
+        entry = find_asset(user_id=user_id, kind="audio", filename=f"segment-{item['index']:02d}.mp3")
+        if not entry:
+            raise HTTPException(status_code=409, detail=f"Envie primeiro o áudio da fala {item['index']}.")
+        audio_path = directory / f"segment-{item['index']:02d}.mp3"
+        try:
+            download_asset_to_path(entry, audio_path, max_bytes=MAX_AUDIO_BYTES)
+        except EntreNosDoisDriveError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        segments.append({
+            "index": item["index"], "speaker": item["speaker"], "path": str(audio_path),
+        })
+    references = host_reference_status(user_id=user_id)
+    if not all(references.get(name) for name in ("Gabriel", "Helena")):
+        raise HTTPException(status_code=409, detail="Cadastre os dois retratos privados antes do teste.")
+    measured = build_measured_timeline({
+        "program": "entre-nos-dois",
+        "project_id": int(user_id),
+        "approval_status": "awaiting_human_review",
+        "segments": segments,
+    })
+    reference_keys = {
+        "Gabriel": f"projects/{int(user_id)}/entre-nos-dois/references/gabriel.png",
+        "Helena": f"projects/{int(user_id)}/entre-nos-dois/references/helena.png",
+    }
+    return measured, reference_keys
+
+
+def _temporary_asset_token(user_id: int, kind: str, filename: str) -> str:
+    import time as _time
+    from app.routers.auth import SECRET_KEY
+    payload = {
+        "user_id": int(user_id), "kind": kind, "filename": filename,
+        "expires": int(_time.time()) + 1800,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(str(SECRET_KEY).encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return encoded + "." + signature
+
+
+def _verify_temporary_asset_token(token: str) -> dict:
+    import time as _time
+    from app.routers.auth import SECRET_KEY
+    try:
+        encoded, supplied = token.split(".", 1)
+        expected = hmac.new(str(SECRET_KEY).encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(supplied, expected):
+            raise ValueError
+        padded = encoded + "=" * (-len(encoded) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        if type(data.get("user_id")) is not int or int(data.get("expires") or 0) < int(_time.time()):
+            raise ValueError
+        allowed = {
+            ("image", "gabriel.png"), ("image", "helena.png"),
+            ("audio", "segment-01.mp3"),
+        }
+        if (data.get("kind"), data.get("filename")) not in allowed:
+            raise ValueError
+        return data
+    except Exception:
+        raise HTTPException(status_code=404, detail="Link temporário indisponível ou expirado.") from None
+
+
+@router.get("/external-assets/{token}", name="entre_nos_dois_external_asset")
+def serve_temporary_provider_asset(token: str):
+    """Unlisted short-lived bearer URL for the expressly authorized provider request."""
+    data = _verify_temporary_asset_token(token)
+    try:
+        entry = find_asset(
+            user_id=data["user_id"], kind=data["kind"], filename=data["filename"],
+        )
+        if not entry:
+            raise HTTPException(status_code=404, detail="Ativo privado não encontrado.")
+        media_type = "image/png" if data["kind"] == "image" else "audio/mpeg"
+        response = stream_asset(entry, media_type=media_type)
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except EntreNosDoisDriveError:
+        raise HTTPException(status_code=503, detail="Ativo privado indisponível.") from None
+
+
+@router.get("/scene/first/estimate")
+def estimate_first_sync3_scene(
+    request: Request,
+    usd_per_second: str,
+    current_user: User = Depends(get_current_admin_user),
+):
+    from app.services.entre_nos_dois_fal_sync3 import prepare_fal_sync3_preview
+    from app.services.entre_nos_dois_drive import drive_storage_health
+    if not drive_storage_health(user_id=current_user.id).get("ready"):
+        raise HTTPException(status_code=503, detail="Google Drive não está pronto.")
+    try:
+        with tempfile.TemporaryDirectory(prefix="e2n-sync3-estimate-") as directory:
+            timeline, references = _measured_pilot_inputs(current_user.id, Path(directory))
+            preview = prepare_fal_sync3_preview(
+                timeline=timeline, reference_keys=references, asset_urls={},
+                price_usd_per_second=float(usd_per_second),
+            )
+        preview["pricing_verified_in_provider_account"] = False
+        preview["private_media_export_authorized"] = False
+        return preview
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)[:240]) from None
+
+
+@router.post("/scene/first/submit")
+def submit_first_sync3_scene_route(
+    approval: Sync3SceneApproval,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    from app.services.entre_nos_dois_sync3_queue import submit_first_sync3_scene, Sync3QueueError
+    from app.services.entre_nos_dois_drive import drive_storage_health
+    if approval.pricing_verified_in_provider_account is not True:
+        raise HTTPException(status_code=409, detail="Confira e confirme a tarifa real na conta fal.ai.")
+    if approval.external_media_consent is not True or approval.confirmation != "AUTORIZO CENA 1":
+        raise HTTPException(status_code=409, detail="É necessária autorização explícita para enviar a primeira cena e seus arquivos ao provedor.")
+    api_key = _fal_key_for_user(db, current_user.id)
+    if not api_key:
+        raise HTTPException(status_code=409, detail="Configure FAL_KEY nas Configurações do Codexia.")
+    if not drive_storage_health(user_id=current_user.id).get("ready"):
+        raise HTTPException(status_code=503, detail="Google Drive não está pronto.")
+    try:
+        rate = float(approval.usd_per_second)
+        ceiling = float(approval.approved_max_usd)
+        if not (0 < rate <= 100 and 0 < ceiling <= 1000):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Tarifa ou limite monetário inválido.") from None
+    try:
+        with tempfile.TemporaryDirectory(prefix="e2n-sync3-submit-") as directory:
+            timeline, references = _measured_pilot_inputs(current_user.id, Path(directory))
+            image_token = _temporary_asset_token(current_user.id, "image", "gabriel.png" if timeline["segments"][0]["speaker"] == "Gabriel" else "helena.png")
+            audio_token = _temporary_asset_token(current_user.id, "audio", "segment-01.mp3")
+            image_url = str(request.url_for("entre_nos_dois_external_asset", token=image_token))
+            audio_url = str(request.url_for("entre_nos_dois_external_asset", token=audio_token))
+            if not image_url.startswith("https://") or not audio_url.startswith("https://"):
+                raise HTTPException(status_code=409, detail="O endereço público HTTPS do Codexia precisa estar configurado para enviar arquivos ao provedor.")
+            receipt = submit_first_sync3_scene(
+                timeline=timeline,
+                reference_keys=references,
+                asset_urls={1: {"image_url": image_url, "audio_url": audio_url}},
+                approved_max_usd=ceiling,
+                price_usd_per_second=rate,
+                api_key=api_key,
+                durable_receipt_dir=str(__import__("app.services.entre_nos_dois_references", fromlist=["_storage_root"])._storage_root()),
+                manual_confirmation=True,
+            )
+        return {
+            "scene_index": 1,
+            "status": receipt["state"],
+            "estimated_usd": receipt["estimated_usd"],
+            "request_submitted": True,
+            "auto_publish": False,
+            "message": "Cena enviada uma vez à fal.ai. Não repita; consulte o status desta solicitação.",
+        }
+    except Sync3QueueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Não foi possível preparar a cena: {type(exc).__name__}. Nenhuma nova tentativa foi iniciada.") from None
+
+
+@router.get("/scene/first/status")
+def get_first_sync3_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    from app.services.entre_nos_dois_sync3_queue import check_sync3_status, Sync3QueueError
+    receipt = _read_sync3_receipt(current_user.id)
+    request_id = str(receipt.get("request_id") or "")
+    if not request_id:
+        return {"status": receipt.get("state"), "request_submitted": False, "auto_publish": False}
+    api_key = _fal_key_for_user(db, current_user.id)
+    if not api_key:
+        raise HTTPException(status_code=409, detail="Configure FAL_KEY nas Configurações do Codexia.")
+    try:
+        status = check_sync3_status(request_id=request_id, api_key=api_key)
+        receipt["state"] = status["status"]
+        _write_sync3_receipt(current_user.id, receipt)
+        return {**status, "scene_index": 1}
+    except Sync3QueueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+@router.post("/scene/first/collect")
+def collect_first_sync3_result(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    import requests
+    from app.services.entre_nos_dois_sync3_result import fetch_sync3_result, Sync3QueueError
+    receipt = _read_sync3_receipt(current_user.id)
+    request_id = str(receipt.get("request_id") or "")
+    api_key = _fal_key_for_user(db, current_user.id)
+    if not request_id or not api_key:
+        raise HTTPException(status_code=409, detail="Não há solicitação concluída disponível.")
+    try:
+        result = fetch_sync3_result(request_id=request_id, api_key=api_key)
+        url = str(result.get("video_url") or "")
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not (parsed.hostname or "").lower().endswith(".fal.media"):
+            raise HTTPException(status_code=409, detail="A URL do resultado não pertence ao domínio seguro esperado do provedor.")
+        response = requests.get(url, stream=True, timeout=(15, 120), allow_redirects=False)
+        if response.status_code != 200:
+            response.close()
+            raise HTTPException(status_code=502, detail="O arquivo final não pôde ser baixado do provedor.")
+        content_type = str(response.headers.get("Content-Type") or "").split(";")[0].lower()
+        content_length = int(response.headers.get("Content-Length") or 0)
+        if content_type != "video/mp4" or (content_length and content_length > 80 * 1024 * 1024):
+            response.close()
+            raise HTTPException(status_code=413, detail="Resultado fora do formato ou tamanho permitido.")
+        chunks = bytearray()
+        for chunk in response.iter_content(1024 * 1024):
+            if chunk:
+                chunks.extend(chunk)
+                if len(chunks) > 80 * 1024 * 1024:
+                    response.close()
+                    raise HTTPException(status_code=413, detail="Vídeo de teste excede 80 MB.")
+        response.close()
+        entry = store_asset_bytes(
+            user_id=current_user.id, kind="video",
+            filename="sync3-scene-01.mp4", body=bytes(chunks),
+            metadata={"scene_index": 1, "provider": "fal.ai", "review_status": "awaiting_human_review"},
+        )
+        receipt["state"] = "result_saved_to_drive"
+        receipt["result_drive_file_id"] = entry.get("drive_file_id")
+        _write_sync3_receipt(current_user.id, receipt)
+        return {
+            "scene_index": 1, "stored": True, "storage": "google_drive",
+            "review_status": "awaiting_human_review", "approved_for_publication": False,
+            "auto_publish": False, "size": entry.get("size"),
+        }
+    except Sync3QueueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except EntreNosDoisDriveError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@router.get("/scene/first/video")
+def play_first_sync3_video(current_user: User = Depends(get_current_admin_user)):
+    try:
+        entry = find_asset(user_id=current_user.id, kind="video", filename="sync3-scene-01.mp4")
+        if not entry:
+            raise HTTPException(status_code=404, detail="A primeira cena ainda não está no Drive.")
+        response = stream_asset(entry, media_type="video/mp4", range_header="")
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except EntreNosDoisDriveError:
+        raise HTTPException(status_code=503, detail="Vídeo de teste indisponível no Drive.") from None
