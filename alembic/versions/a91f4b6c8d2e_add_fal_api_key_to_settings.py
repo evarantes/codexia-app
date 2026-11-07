@@ -17,8 +17,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("settings", sa.Column("fal_api_key", sa.String(), nullable=True))
+    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("settings")}
+    if "fal_api_key" not in columns:
+        op.add_column("settings", sa.Column("fal_api_key", sa.String(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("settings", "fal_api_key")
+    # Keep any configured provider key; rollback must not discard credentials.
+    pass
