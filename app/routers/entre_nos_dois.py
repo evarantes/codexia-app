@@ -34,7 +34,7 @@ from app.services.entre_nos_dois_audio_review import (
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
-from app.services.entre_nos_dois_drive import find_asset, stream_asset, EntreNosDoisDriveError
+from app.services.entre_nos_dois_drive import (find_asset, find_video_asset, stream_asset, archive_video_file, EntreNosDoisDriveError)
 
 router = APIRouter(prefix="/studio/entre-nos-dois", tags=["studio-entre-nos-dois"])
 
@@ -74,6 +74,7 @@ def project_videos(
                 "message": row.last_message,
                 "error": row.last_error,
                 "has_video": bool(row.video_url or row.video_path),
+                "archived_on_drive": bool(row.video_url and not row.video_path),
                 "youtube_url": row.youtube_url,
                 "published_at": row.published_at.isoformat() if row.published_at else None,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -490,3 +491,60 @@ def project_channel_oauth_callback(
     except Exception:
         return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=failed", status_code=303)
     return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=success", status_code=303)
+
+
+@router.get("/videos/{video_id}/file")
+def stream_project_video(
+    video_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    row = db.query(UnifiedVideo).filter(
+        UnifiedVideo.id == int(video_id),
+        UnifiedVideo.user_id == current_user.id,
+        UnifiedVideo.source_module == "entre_nos_dois",
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Episódio não encontrado.")
+    if row.video_path and Path(str(row.video_path)).is_file():
+        return FileResponse(str(row.video_path), media_type="video/mp4", filename=f"entre-nos-dois-{video_id}.mp4")
+    try:
+        entry = find_video_asset(user_id=current_user.id, video_id=video_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="O vídeo ainda não foi confirmado no Google Drive.")
+        response = stream_asset(
+            entry, media_type="video/mp4",
+            range_header=request.headers.get("range", ""),
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except EntreNosDoisDriveError:
+        raise HTTPException(status_code=503, detail="Vídeo privado indisponível no Google Drive.") from None
+
+
+@router.post("/videos/{video_id}/archive")
+def archive_project_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    row = db.query(UnifiedVideo).filter(
+        UnifiedVideo.id == int(video_id),
+        UnifiedVideo.user_id == current_user.id,
+        UnifiedVideo.source_module == "entre_nos_dois",
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Episódio não encontrado.")
+    if not row.video_path:
+        entry = find_video_asset(user_id=current_user.id, video_id=video_id)
+        if entry:
+            return {"archived": True, "filename": entry.get("filename"), "size": entry.get("size")}
+        raise HTTPException(status_code=409, detail="O arquivo renderizado não está disponível para arquivamento.")
+    try:
+        entry = archive_video_file(
+            user_id=current_user.id, video_id=video_id, path=str(row.video_path),
+        )
+        return {"archived": True, "filename": entry.get("filename"), "size": entry.get("size")}
+    except EntreNosDoisDriveError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
