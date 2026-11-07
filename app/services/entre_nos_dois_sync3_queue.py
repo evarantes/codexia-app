@@ -17,7 +17,7 @@ from typing import Callable
 from app.services.entre_nos_dois_fal_sync3 import FAL_MODEL, prepare_fal_sync3_preview
 
 QUEUE_ENDPOINT = f"https://queue.fal.run/{FAL_MODEL}"
-QUEUE_STATUS_BASE = "https://queue.fal.run/fal-ai/sync-lipsync"
+QUEUE_STATUS_BASE = "https://queue.fal.run/fal-ai/sync-lipsync/v3/image-to-video"
 _ALLOWED = {"IN_QUEUE", "IN_PROGRESS", "COMPLETED"}
 
 
