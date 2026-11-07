@@ -169,7 +169,7 @@ def readiness(
     # Do not consult another user's global Settings when no user-specific row exists.
     own_settings = settings if settings is not None else SimpleNamespace()
     elevenlabs = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
-    fal_configured = bool(normalize_secret(os.getenv("FAL_KEY")))
+    fal_configured = bool(resolve_secret("fal_api_key", "FAL_KEY", own_settings)["configured"])
     storage_health = private_storage_health(user_id=current_user.id)
     storage_configured = storage_health["ready"]
     visual_assets = {}
