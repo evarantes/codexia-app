@@ -232,6 +232,7 @@ class Settings(Base):
     pixabay_api_key = Column(String, nullable=True)
     edenai_api_key = Column(String, nullable=True)
     elevenlabs_api_key = Column(String, nullable=True)
+    fal_api_key = Column(String, nullable=True)
     elevenlabs_voice_id = Column(String, nullable=True)
     elevenlabs_voice_name = Column(String, nullable=True)
     text_provider = Column(String, nullable=True)
