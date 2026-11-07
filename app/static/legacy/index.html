@@ -15,6 +15,48 @@
     <noscript><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"></noscript>
     <style>
         [v-cloak] { display: none !important; }
+
+        /* Keep the legacy app and its sidebar inside the embedded viewport.
+           Scroll long settings content inside main instead of extending the page. */
+        html, body {
+            width: 100%;
+            height: 100%;
+            min-height: 0;
+            margin: 0;
+            overflow: hidden;
+        }
+        #app {
+            display: flex;
+            width: 100%;
+            height: 100vh;
+            height: 100dvh;
+            min-height: 0;
+            overflow: hidden;
+        }
+        #app > aside {
+            height: 100vh;
+            height: 100dvh;
+            min-height: 0;
+            flex: 0 0 16rem;
+            overflow: hidden;
+        }
+        #app > aside > nav {
+            min-height: 0;
+            overflow-y: auto;
+        }
+        #app > div.flex-1 {
+            height: 100vh;
+            height: 100dvh;
+            min-width: 0;
+            min-height: 0;
+            flex: 1 1 0%;
+            overflow: hidden;
+        }
+        #app > div.flex-1 > main {
+            min-width: 0;
+            min-height: 0;
+            overflow-y: auto;
+        }
         #loading-overlay {
             position: fixed;
             top: 0;
