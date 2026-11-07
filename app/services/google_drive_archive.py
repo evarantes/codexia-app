@@ -28,7 +28,7 @@ from sqlalchemy import desc
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.database import SessionLocal
-from app.models import GoogleDriveAccount, Settings
+from app.models import GoogleDriveAccount, Settings, UnifiedVideo
 from app.routers.auth import SECRET_KEY
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
@@ -461,22 +461,71 @@ class GoogleDriveArchive:
             "errors": errors,
         }
 
-    def _task_folder(self, service, root_id: str, task: str) -> str:
-        task = _valid_task(task)
+    @staticmethod
+    def _find_or_create_folder(service, parent_id: str, name: str, properties: Dict[str, str]) -> str:
         query = (
-            f"{_quoted(root_id)} in parents and name = {_quoted(task)} "
+            f"{_quoted(parent_id)} in parents and name = {_quoted(name)} "
             f"and mimeType = {_quoted(FOLDER_MIME)} and trashed = false"
         )
         found = service.files().list(q=query, pageSize=10, fields="files(id,name)").execute().get("files") or []
         if found:
             return str(found[0]["id"])
         created = service.files().create(body={
-            "name": task,
+            "name": name,
             "mimeType": FOLDER_MIME,
-            "parents": [root_id],
-            "appProperties": {"codexia_task": task},
+            "parents": [parent_id],
+            "appProperties": properties,
         }, fields="id").execute()
         return str(created["id"])
+
+    def _entre_nos_dois_parent(self, service, root_id: str, user_id: int) -> str:
+        module_id = self._find_or_create_folder(
+            service, root_id, "Entre Nós Dois", {"codexia_module": "entre_nos_dois"},
+        )
+        return self._find_or_create_folder(
+            service, module_id, f"usuario-{int(user_id)}",
+            {"codexia_module": "entre_nos_dois", "codexia_user_id": str(int(user_id))},
+        )
+
+    def _task_folder(self, service, root_id: str, task: str) -> str:
+        task = _valid_task(task)
+        # Studio portraits/audio use one stable user-scoped task key.
+        direct = re.fullmatch(r"entre-nos-dois-user-(\d+)", task)
+        if direct:
+            user_folder = self._entre_nos_dois_parent(service, root_id, int(direct.group(1)))
+            return self._find_or_create_folder(
+                service, user_folder, "materiais",
+                {"codexia_module": "entre_nos_dois", "codexia_kind": "materials"},
+            )
+
+        # Canonical video tasks keep their own index/task id, while their Drive
+        # bytes are grouped under the module and user that own the episode.
+        db = SessionLocal()
+        try:
+            video = (
+                db.query(UnifiedVideo)
+                .filter(
+                    UnifiedVideo.task_id == task,
+                    UnifiedVideo.source_module == "entre_nos_dois",
+                )
+                .order_by(UnifiedVideo.id.desc())
+                .first()
+            )
+        except Exception:
+            video = None
+        finally:
+            db.close()
+        if video and video.user_id:
+            user_folder = self._entre_nos_dois_parent(service, root_id, video.user_id)
+            return self._find_or_create_folder(
+                service, user_folder, f"episodio-{int(video.id)}",
+                {"codexia_module": "entre_nos_dois", "codexia_video_id": str(int(video.id))},
+            )
+
+        return self._find_or_create_folder(
+            service, root_id, task, {"codexia_task": task},
+        )
+
 
     def _task_folder_id(self, service, values: Dict[str, Any], task: str) -> str:
         task = _valid_task(task)

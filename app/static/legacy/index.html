@@ -4304,6 +4304,11 @@
                             <input v-model="settings.elevenlabs_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
                             <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://elevenlabs.io/" target="_blank" class="text-blue-600 underline">ElevenLabs</a></p>
                         </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">FAL API Key (sincronização labial do Entre Nós Dois)</label>
+                            <input v-model="settings.fal_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" autocomplete="new-password" placeholder="FAL_KEY">
+                            <p class="text-xs text-gray-500 mt-1">A chave é lida daqui para o teste de sincronização labial do Entre Nós Dois. Nenhum envio ocorre ao salvar as configurações.</p>
+                        </div>
 
                         <div class="mb-4 bg-gray-50 p-4 rounded border">
                             <h4 class="font-bold mb-2">Minha voz (clonagem via ElevenLabs)</h4>

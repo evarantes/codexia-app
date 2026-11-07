@@ -1,0 +1,30 @@
+# Lightweight isolated pilot image. No Chromium, FFmpeg, render worker or
+# dependencies of the full Codexia video pipeline.
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_ENV=staging
+
+RUN pip install --no-cache-dir \
+    "fastapi>=0.110,<1.0" \
+    "uvicorn>=0.27,<1.0" \
+    "sqlalchemy>=2.0,<3.0" \
+    "psycopg2-binary>=2.9,<3.0" \
+    "psycopg[binary]>=3.1,<4.0" \
+    "python-multipart>=0.0.9" \
+    "python-jose[cryptography]>=3.3,<4.0" \
+    "bcrypt>=4,<5" \
+    "Pillow>=10,<13" \
+    "mutagen>=1.47,<2.0"
+
+COPY app/__init__.py app/database.py app/models.py app/studio_staging.py app/
+COPY app/routers/__init__.py app/routers/auth.py app/routers/entre_nos_dois.py app/routers/
+COPY app/services/__init__.py app/services/provider_config.py app/services/email_service.py app/services/entre_nos_dois*.py app/services/
+COPY app/static/pages/entre-nos-dois/index.html app/static/pages/entre-nos-dois/index.html
+COPY scripts/entre_nos_dois_staging_admin.py scripts/entre_nos_dois_staging_schema.py scripts/
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3).close()" || exit 1
+
+CMD ["sh", "-c", "python -m scripts.entre_nos_dois_staging_schema && uvicorn app.studio_staging:app --host 0.0.0.0 --port 8000"]

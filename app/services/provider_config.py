@@ -151,6 +151,7 @@ def resolve_global_provider_settings(settings: Optional[Settings] = None) -> Dic
         "openrouter_api_key": resolve_secret("openrouter_api_key", "OPENROUTER_API_KEY", settings_obj),
         "openai_api_key": resolve_secret("openai_api_key", "OPENAI_API_KEY", settings_obj),
         "elevenlabs_api_key": resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", settings_obj),
+        "fal_api_key": resolve_secret("fal_api_key", "FAL_KEY", settings_obj),
         "edenai_api_key": resolve_secret("edenai_api_key", "EDENAI_API_KEY", settings_obj),
         "suno_api_key": resolve_secret("suno_api_key", "SUNO_API_KEY", settings_obj),
         "pexels_api_key": resolve_secret("pexels_api_key", "PEXELS_API_KEY", settings_obj),
