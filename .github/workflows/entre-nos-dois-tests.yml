@@ -12,6 +12,7 @@ on:
       - "app/routers/settings.py"
       - "app/services/provider_config.py"
       - "alembic/versions/*fal_api_key*.py"
+      - "alembic/versions/*entre_nos_dois*.py"
       - "app/services/google_drive_archive.py"
       - "app/services/central_asset_transfer.py"
       - "app/services/youtube_service.py"
@@ -62,7 +63,7 @@ jobs:
           PY
           node --check /tmp/entre-nos-dois-ui.js
       - name: Compile standalone voice modules
-        run: python -m compileall -q app/studio_staging.py scripts/entre_nos_dois_staging_schema.py scripts/entre_nos_dois_staging_admin.py scripts/entre_nos_dois_smoke.py app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py app/services/entre_nos_dois_references.py app/services/entre_nos_dois_drive.py app/services/youtube_channel_accounts.py app/services/google_drive_archive.py app/services/central_asset_transfer.py app/services/youtube_service.py app/routers/entre_nos_dois.py app/routers/youtube.py app/models.py
+        run: python -m compileall -q app/studio_staging.py scripts/entre_nos_dois_staging_schema.py scripts/entre_nos_dois_staging_admin.py scripts/entre_nos_dois_smoke.py app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py app/services/entre_nos_dois_references.py app/services/entre_nos_dois_drive.py app/services/youtube_channel_accounts.py app/services/google_drive_archive.py app/services/central_asset_transfer.py app/services/youtube_service.py app/routers/entre_nos_dois.py app/routers/youtube.py app/models.py alembic/versions/a91f4b6c8d2e_add_fal_api_key_to_settings.py alembic/versions/f6a2d8c4e1b9_merge_entre_nos_dois_schema_heads.py
       - name: Test only isolated program contracts
         run: |
           python -m unittest -v \
