@@ -34,7 +34,8 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <button type="submit">Trocar senha e abrir Studio</button></form><p id="studio-login-status" class="muted" role="status" aria-live="polite">Autenticação necessária para dados e imagens privados.</p></section>
 <div class="studio-tabs" role="tablist" aria-label="Seções de Entre Nós Dois">
 <button class="studio-tab" type="button" role="tab" aria-selected="true" aria-controls="tab-preparation" data-target="tab-preparation">Preparação</button>
-<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-videos" data-target="tab-videos">Vídeos do projeto</button>\n<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-channels" data-target="tab-channels">Canal YouTube</button>
+<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-videos" data-target="tab-videos">Vídeos do projeto</button>
+<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-channels" data-target="tab-channels">Canal YouTube</button>
 </div>
 <div id="tab-channels" role="tabpanel" hidden>
 <section class="card"><h2>Canal do Entre Nós Dois</h2>
@@ -529,8 +530,10 @@ document.querySelectorAll('.studio-tab').forEach(button=>button.addEventListener
  const target=button.dataset.target;
  document.querySelectorAll('.studio-tab').forEach(tab=>tab.setAttribute('aria-selected',String(tab===button)));
  document.querySelector('#tab-preparation').hidden=target!=='tab-preparation';
- document.querySelector('#tab-videos').hidden=target!=='tab-videos';\n document.querySelector('#tab-channels').hidden=target!=='tab-channels';
- if(target==='tab-videos')await refreshProjectVideos();\n if(target==='tab-channels')await refreshProjectChannels();
+ document.querySelector('#tab-videos').hidden=target!=='tab-videos';
+ document.querySelector('#tab-channels').hidden=target!=='tab-channels';
+ if(target==='tab-videos')await refreshProjectVideos();
+ if(target==='tab-channels')await refreshProjectChannels();
 }));
 document.querySelector('#verify-voices').addEventListener('click',async()=>{
  const button=document.querySelector('#verify-voices');
