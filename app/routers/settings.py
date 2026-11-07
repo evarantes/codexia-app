@@ -445,6 +445,7 @@ class SettingsUpdate(BaseModel):
     pixabay_api_key: Optional[str] = None
     edenai_api_key: Optional[str] = None
     elevenlabs_api_key: Optional[str] = None
+    fal_api_key: Optional[str] = None
     elevenlabs_voice_id: Optional[str] = None
     elevenlabs_voice_name: Optional[str] = None
     # Instagram
@@ -1237,6 +1238,8 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         settings.edenai_api_key = v or None
     if settings_update.elevenlabs_api_key is not None:
         settings.elevenlabs_api_key = settings_update.elevenlabs_api_key
+    if settings_update.fal_api_key is not None:
+        settings.fal_api_key = str(settings_update.fal_api_key).strip() or None
     if settings_update.elevenlabs_voice_id is not None:
         v = str(settings_update.elevenlabs_voice_id).strip()
         settings.elevenlabs_voice_id = v or None
