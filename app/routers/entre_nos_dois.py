@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from pathlib import Path
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
-from google_auth_oauthlib.flow import Flow
 
 from app.database import get_db
 from app.models import User, Settings, UnifiedVideo
@@ -420,6 +419,10 @@ def connect_project_channel(
     client_secret = (getattr(settings, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
     if not client_id or not client_secret:
         raise HTTPException(status_code=409, detail="Configure o cliente OAuth do YouTube em Configurações do Codexia.")
+    try:
+        from google_auth_oauthlib.flow import Flow
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Biblioteca OAuth do YouTube indisponível neste ambiente.") from None
     redirect_uri = str(request.url_for("entre_nos_dois_youtube_callback"))
     client_config = {
         "web": {
@@ -471,6 +474,10 @@ def project_channel_oauth_callback(
     client_secret = (getattr(settings, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
     if not client_id or not client_secret:
         return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=configuration", status_code=303)
+    try:
+        from google_auth_oauthlib.flow import Flow
+    except ImportError:
+        return RedirectResponse("/studio/entre-nos-dois/painel?youtube_oauth=failed", status_code=303)
     client_config = {
         "web": {
             "client_id": client_id,
