@@ -1,0 +1,54 @@
+# Entre Nós Dois — homologação isolada. Não subir junto com a produção.
+# Uso: docker compose -f docker-compose.entre-nos-dois-staging.yml up --build -d
+# Exige: CODEXIA_STAGING_DB_PASSWORD e CODEXIA_STAGING_SECRET_KEY (segredos fortes).
+name: codexia-entre-nos-dois-staging
+
+services:
+  studio-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.studio-staging
+    restart: "no"
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 128
+    # O Dockerfile reduzido cria e verifica apenas o schema de homologação.
+    environment:
+      APP_ENV: staging
+      DATABASE_URL: postgresql://codexia_staging:${CODEXIA_STAGING_DB_PASSWORD:?Defina CODEXIA_STAGING_DB_PASSWORD}@studio-db:5432/codexia_staging
+      SECRET_KEY: ${CODEXIA_STAGING_SECRET_KEY:?Defina CODEXIA_STAGING_SECRET_KEY}
+      CODEXIA_STUDIO_PRIVATE_DIR: /data/studio-private
+      CODEXIA_STUDIO_ENABLE_PAID_TTS: "0"
+      CODEXIA_STUDIO_MAX_TTS_USD: "0"
+      # Não configurar ELEVENLABS_API_KEY, FAL_KEY ou tokens do YouTube na homologação.
+    ports:
+      - "127.0.0.1:18080:8000"
+    volumes:
+      - studio_private:/data/studio-private
+    depends_on:
+      studio-db:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  studio-db:
+    image: postgres:15-alpine
+    restart: "no"
+    mem_limit: 512m
+    cpus: "0.75"
+    pids_limit: 100
+    environment:
+      POSTGRES_USER: codexia_staging
+      POSTGRES_PASSWORD: ${CODEXIA_STAGING_DB_PASSWORD:?Defina CODEXIA_STAGING_DB_PASSWORD}
+      POSTGRES_DB: codexia_staging
+    volumes:
+      - studio_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codexia_staging -d codexia_staging"]
+      interval: 5s
+      retries: 20
+      timeout: 3s
+
+volumes:
+  studio_private:
+  studio_db_data:

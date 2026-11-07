@@ -1,0 +1,124 @@
+name: Entre Nos Dois Voice Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/services/entre_nos_dois*.py"
+      - "tests/test_entre_nos_dois*.py"
+      - "app/routers/entre_nos_dois.py"
+      - "app/routers/youtube.py"
+      - "app/models.py"
+      - "app/routers/settings.py"
+      - "app/services/provider_config.py"
+      - "alembic/versions/*fal_api_key*.py"
+      - "app/services/google_drive_archive.py"
+      - "app/services/central_asset_transfer.py"
+      - "app/services/youtube_service.py"
+      - "app/services/youtube_channel_accounts.py"
+      - "alembic/versions/*youtube_channel_accounts.py"
+      - "app/routers/__init__.py"
+      - "app/static/pages/entre-nos-dois/**"
+      - "app/main.py"
+      - "app/studio_staging.py"
+      - "scripts/entre_nos_dois_smoke.py"
+      - "scripts/entre_nos_dois_staging_admin.py"
+      - "docker-compose.entre-nos-dois-staging.yml"
+      - "Dockerfile.studio-staging"
+      - "scripts/entre_nos_dois_staging_schema.py"
+      - "scripts/entre_nos_dois_staging_http_e2e.py"
+      - ".github/workflows/entre-nos-dois-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  voice-contract:
+    name: Approved voices and TTS safety (no paid API calls)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal import dependency
+        run: python -m pip install --quiet "SQLAlchemy>=2.0,<3.0" "Pillow>=10,<13" "mutagen>=1.47,<2.0"
+      - name: Validate isolated staging Compose configuration without starting containers
+        env:
+          CODEXIA_STAGING_DB_PASSWORD: ci_fake_staging_password_only
+          CODEXIA_STAGING_SECRET_KEY: ci_fake_staging_secret_only
+        run: docker compose -f docker-compose.entre-nos-dois-staging.yml config --quiet
+      - name: Validate interactive Studio JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          page = Path("app/static/pages/entre-nos-dois/index.html").read_text(encoding="utf-8")
+          source = page.split("<script>", 1)[1].split("</script>", 1)[0]
+          Path("/tmp/entre-nos-dois-ui.js").write_text(source, encoding="utf-8")
+          PY
+          node --check /tmp/entre-nos-dois-ui.js
+      - name: Compile standalone voice modules
+        run: python -m compileall -q app/studio_staging.py scripts/entre_nos_dois_staging_schema.py scripts/entre_nos_dois_staging_admin.py scripts/entre_nos_dois_smoke.py app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py app/services/entre_nos_dois_timeline.py app/services/entre_nos_dois_visual_plan.py app/services/entre_nos_dois_lipsync_gate.py app/services/entre_nos_dois_fal_sync3.py app/services/entre_nos_dois_sync3_queue.py app/services/entre_nos_dois_sync3_result.py app/services/entre_nos_dois_readiness.py app/services/entre_nos_dois_references.py app/services/entre_nos_dois_drive.py app/services/youtube_channel_accounts.py app/services/google_drive_archive.py app/services/central_asset_transfer.py app/services/youtube_service.py app/routers/entre_nos_dois.py app/routers/youtube.py app/models.py
+      - name: Test only isolated program contracts
+        run: |
+          python -m unittest -v \
+            tests.test_entre_nos_dois \
+            tests.test_entre_nos_dois_voice_plan \
+            tests.test_entre_nos_dois_tts_adapter \
+            tests.test_entre_nos_dois_voice_preflight \
+            tests.test_entre_nos_dois_voice_check \
+            tests.test_entre_nos_dois_timeline \
+            tests.test_entre_nos_dois_visual_plan \
+            tests.test_entre_nos_dois_lipsync_gate \
+            tests.test_entre_nos_dois_fal_sync3 \
+            tests.test_entre_nos_dois_sync3_queue \
+            tests.test_entre_nos_dois_sync3_result \
+            tests.test_entre_nos_dois_studio_api \
+            tests.test_entre_nos_dois_readiness \
+            tests.test_entre_nos_dois_references \
+            tests.test_entre_nos_dois_http_smoke \
+            tests.test_entre_nos_dois_staging \
+            tests.test_entre_nos_dois_staging_admin \
+            tests.test_entre_nos_dois_staging_app \
+            tests.test_entre_nos_dois_staging_schema \
+            tests.test_entre_nos_dois_staging_http_e2e \
+            tests.test_entre_nos_dois_audio_review \
+            tests.test_entre_nos_dois_cost_worksheet \
+            tests.test_entre_nos_dois_tts_single \
+            tests.test_entre_nos_dois_scene_readiness
+
+  staging-runtime:
+    name: Start isolated Studio HTTP smoke (no billable calls)
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      CODEXIA_STAGING_DB_PASSWORD: ci_staging_password_fake_local_only_123
+      CODEXIA_STAGING_SECRET_KEY: ci_staging_secret_fake_local_only_456
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start temporary minimal Studio + PostgreSQL
+        run: docker compose -f docker-compose.entre-nos-dois-staging.yml up --build -d
+      - name: Confirm HTTP boot and anonymous security boundaries
+        run: |
+          for n in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:18080/health
+          python scripts/entre_nos_dois_smoke.py --base-url http://127.0.0.1:18080
+      - name: Create disposable staging administrator
+        run: |
+          docker compose -f docker-compose.entre-nos-dois-staging.yml exec -T studio-api python -c "from scripts.entre_nos_dois_staging_admin import bootstrap_admin; bootstrap_admin('ci-studio@example.test','ci-initial-staging-passphrase-123')"
+      - name: Verify login, rotation and Drive fail-closed behavior
+        run: |
+          python scripts/entre_nos_dois_staging_http_e2e.py --base-url http://127.0.0.1:18080 --email ci-studio@example.test --initial-password ci-initial-staging-passphrase-123 --new-password ci-renewed-staging-passphrase-456
+      - name: Collect startup logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.entre-nos-dois-staging.yml logs --tail=100 studio-api studio-db
+      - name: Clean up disposable containers and volumes
+        if: always()
+        run: docker compose -f docker-compose.entre-nos-dois-staging.yml down --volumes --remove-orphans

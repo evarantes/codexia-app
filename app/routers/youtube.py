@@ -7884,6 +7884,21 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
             preflight_stop = None
             preflight_thread = None
         process_video_generation(req, task_id)
+        # Entre Nós Dois mantém o MP4 final no Google Drive; só remove o cache
+        # local depois da confirmação de checksum/tamanho e registro do índice.
+        try:
+            from app.services.entre_nos_dois_drive import archive_finished_video_task
+            archive_finished_video_task(task_id)
+        except Exception as archive_exc:
+            try:
+                merge_task_result(task_id, {
+                    "entre_nos_dois_drive_archive_pending": True,
+                    "entre_nos_dois_drive_archive_error": (
+                        f"{type(archive_exc).__name__}: {str(archive_exc)[:240]}"
+                    ),
+                })
+            except Exception:
+                pass
         transfer.publish_manifest(task_id)
         current = get_task(task_id) or {}
         current_status = str(current.get("status") or "").strip().lower()
