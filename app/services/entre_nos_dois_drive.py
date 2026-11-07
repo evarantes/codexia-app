@@ -238,3 +238,41 @@ def archive_finished_video_task(task_id: str) -> dict | None:
     finally:
         db.close()
     return archive_video_file(user_id=user_id, video_id=video_id, path=path)
+
+
+def download_asset_to_path(entry: dict, destination: str | Path, *, max_bytes: int) -> Path:
+    """Stream a verified private Drive asset to a temporary processing path."""
+    import os
+    from googleapiclient.http import MediaIoBaseDownload
+    from app.services.google_drive_archive import GoogleDriveArchive
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    size = int(entry.get("size") or 0)
+    file_id = str(entry.get("drive_file_id") or "").strip()
+    if not file_id or size <= 0 or size > int(max_bytes):
+        raise EntreNosDoisDriveError("Ativo ausente ou acima do limite de processamento.")
+    archive = GoogleDriveArchive.for_asset(entry)
+    service = archive.drive_service()
+    request = service.files().get_media(fileId=file_id)
+    written = 0
+    try:
+        with target.open("wb") as output:
+            downloader = MediaIoBaseDownload(output, request, chunksize=1024 * 1024)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+                written = output.tell()
+                if written > int(max_bytes):
+                    raise EntreNosDoisDriveError("Ativo excedeu o limite durante o download.")
+            output.flush()
+            os.fsync(output.fileno())
+    except EntreNosDoisDriveError:
+        target.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        raise EntreNosDoisDriveError("Não foi possível preparar o ativo privado do Drive.") from exc
+    if written != size:
+        target.unlink(missing_ok=True)
+        raise EntreNosDoisDriveError("O tamanho recebido do Drive não confere com o índice.")
+    return target
