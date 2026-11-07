@@ -441,6 +441,8 @@ async function refreshProjectVideos(){
    meta.append(state,progress,content);row.append(title,meta);
    if(item.message){const message=document.createElement('p');message.className='muted';message.textContent=item.message;row.append(message)}
    if(item.error){const error=document.createElement('p');error.className='status';error.textContent=item.error;row.append(error)}
+   if(item.has_video){const link=document.createElement('a');link.href='/studio/entre-nos-dois/videos/'+encodeURIComponent(item.id)+'/file';link.textContent=item.archived_on_drive?'Assistir/baixar do Google Drive':'Assistir vídeo';link.target='_blank';link.rel='noopener noreferrer';row.append(link)}
+   if(item.has_video&&!item.archived_on_drive){const archive=document.createElement('button');archive.type='button';archive.textContent='Arquivar no Google Drive';archive.addEventListener('click',async()=>{archive.disabled=true;archive.textContent='Arquivando…';try{const response=await studioFetch('/studio/entre-nos-dois/videos/'+encodeURIComponent(item.id)+'/archive',{method:'POST'});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.detail||'Falha ao arquivar');archive.textContent='Arquivado no Google Drive';await refreshProjectVideos()}catch(error){archive.disabled=false;archive.textContent='Arquivar no Google Drive';const p=document.createElement('p');p.className='status';p.textContent=error.message;row.append(p)}});row.append(archive)}
    if(item.youtube_url){const link=document.createElement('a');link.href=item.youtube_url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Abrir no YouTube';row.append(link)}
    holder.append(row);
   }
