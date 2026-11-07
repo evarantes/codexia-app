@@ -79,6 +79,19 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <button id="scene-check" type="button">Verificar as quatro cenas</button>
 <p id="scene-status" class="muted" role="status">Aguardando verificação administrativa.</p>
 <div id="scene-lines"></div>
+<div class="notice" style="margin-top:14px">
+<strong>Teste pago e envio externo — exige confirmação.</strong>
+<p class="muted">A ação abaixo envia somente a primeira fala e o retrato correspondente à fal.ai por links privados temporários. Confira a tarifa real na sua conta antes de autorizar. Este teste não cria o episódio completo e não publica nada.</p>
+<label>Limite máximo para esta cena (US$)<input id="sync3-max-usd" type="text" inputmode="decimal" placeholder="Ex.: 1.00" style="padding:10px;border-radius:8px;max-width:180px;display:block"></label>
+<label style="display:block;margin-top:8px"><input id="sync3-rate-verified" type="checkbox"> Conferi a tarifa real na minha conta fal.ai</label>
+<label style="display:block;margin-top:8px"><input id="sync3-media-consent" type="checkbox"> Autorizo o envio temporário do retrato e áudio da cena 1 à fal.ai</label>
+<label style="display:block;margin-top:8px">Digite <strong>AUTORIZO CENA 1</strong><input id="sync3-confirmation" type="text" autocomplete="off" style="padding:10px;border-radius:8px;max-width:260px;display:block"></label>
+<p><button id="sync3-submit" type="button">Enviar somente cena 1 (pode gerar cobrança)</button>
+<button id="sync3-status" type="button">Consultar status</button>
+<button id="sync3-collect" type="button">Guardar resultado concluído no Drive</button>
+<button id="sync3-open" type="button">Abrir cena de teste no Drive</button></p>
+<p id="sync3-message" class="muted" role="status" aria-live="polite">Aguardando conferência do custo e autorização.</p>
+</div>
 </section>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div><p id="next-action" class="notice" role="status" aria-live="polite">Verificando próximo passo...</p></section>
 <section class="card" style="margin-top:18px"><h2>Prévia do episódio — sem custo</h2><p class="muted">Simulação visual do roteiro com imagens privadas cadastradas: não reproduz as vozes Andrey/Luciana nem vídeo com sincronização labial. Clique para conferir os turnos antes da produção.</p>
@@ -270,6 +283,44 @@ async function refreshSceneReadiness(){
  }catch(error){out.textContent=error.message}
 }
 document.getElementById('scene-check').addEventListener('click',refreshSceneReadiness);
+document.getElementById('sync3-submit').addEventListener('click',async()=>{
+ const button=document.getElementById('sync3-submit'),output=document.getElementById('sync3-message');
+ const rate=document.getElementById('scene-rate').value.trim().replace(',','.');
+ const max=document.getElementById('sync3-max-usd').value.trim().replace(',','.');
+ if(!rate||!max){output.textContent='Informe a tarifa por segundo e o limite máximo após consultar sua conta.';return}
+ button.disabled=true;output.textContent='Preparando links privados temporários e conferindo os quatro áudios. Nenhum retry automático será feito.';
+ try{
+  const response=await studioFetch('/studio/entre-nos-dois/scene/first/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+   usd_per_second:rate,approved_max_usd:max,
+   pricing_verified_in_provider_account:document.getElementById('sync3-rate-verified').checked,
+   external_media_consent:document.getElementById('sync3-media-consent').checked,
+   confirmation:document.getElementById('sync3-confirmation').value.trim()
+  })});
+  const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.detail||'Envio não autorizado.');
+  output.textContent='Cena 1 enviada uma vez. Estimativa: US$ '+data.estimated_usd+'. Consulte o status; não envie novamente.';
+ }catch(error){output.textContent=error.message}
+ finally{button.disabled=false}
+});
+document.getElementById('sync3-status').addEventListener('click',async()=>{
+ const output=document.getElementById('sync3-message');
+ try{const response=await studioFetch('/studio/entre-nos-dois/scene/first/status');const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.detail||'Status indisponível.');
+ output.textContent='Cena 1: '+(data.status||'sem solicitação')+(data.status==='COMPLETED'?' · pronta para guardar no Drive':'')+'. Não há nova cobrança nesta consulta.';
+ }catch(error){output.textContent=error.message}
+});
+document.getElementById('sync3-collect').addEventListener('click',async()=>{
+ const button=document.getElementById('sync3-collect'),output=document.getElementById('sync3-message');
+ button.disabled=true;output.textContent='Baixando o resultado e guardando no Google Drive...';
+ try{const response=await studioFetch('/studio/entre-nos-dois/scene/first/collect',{method:'POST'});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.detail||'Resultado indisponível.');
+ output.textContent='Cena de teste guardada no Google Drive ('+data.size+' bytes). Ela aguarda revisão humana e não está aprovada para publicação.';
+ }catch(error){output.textContent=error.message}
+ finally{button.disabled=false}
+});
+document.getElementById('sync3-open').addEventListener('click',async()=>{
+ const output=document.getElementById('sync3-message');
+ try{const response=await studioFetch('/studio/entre-nos-dois/scene/first/video');if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'Vídeo ainda não está no Drive.')}
+ const url=URL.createObjectURL(await response.blob());window.open(url,'_blank','noopener');setTimeout(()=>URL.revokeObjectURL(url),60000);
+ }catch(error){output.textContent=error.message}
+});
 let currentVoiceQuote=null;
 async function refreshVoiceGenerationGate(){
  const panel=document.getElementById('paid-tts-controls');
